@@ -131,5 +131,24 @@ lxc exec $WEB2 -- ip addr add 30.0.0.4/24 dev eth1
 lxc exec $WEB3 -- ip addr add 30.0.0.5/24 dev eth1
 lxc exec $REDIS -- ip addr add 30.0.0.1/24 dev eth0
 
+echo "Setting Routes"
+# HAProxy routes to back_net and redis_net via WAFs
+lxc exec $HA_PROXY -- ip route add 192.168.1.0/24 via 20.0.0.2
+lxc exec $HA_PROXY -- ip route add 30.0.0.0/24 via 20.0.0.2
+
+# WAFs route to redis_net via web servers
+lxc exec $WAF1 -- ip route add 30.0.0.0/24 via 192.168.1.3
+lxc exec $WAF2 -- ip route add 30.0.0.0/24 via 192.168.1.3
+
+# Redis routes back to other networks via web servers
+lxc exec $REDIS -- ip route add 192.168.1.0/24 via 30.0.0.3
+lxc exec $REDIS -- ip route add 20.0.0.0/24 via 30.0.0.3
+
+for server in $WEB_SERVERS; do
+    lxc exec $server -- sysctl -w net.ipv4.ip_forward=1
+done
+
+lxc exec $WAF2 -- sysctl -w net.ipv4.ip_forward=1
+lxc exec $WAF1 -- sysctl -w net.ipv4.ip_forward=1
 
 echo "Fin de la configuration"
