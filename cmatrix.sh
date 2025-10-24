@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Name of the docker image
-IMAGE_NAME="cmatrixImage"
+IMAGE_NAME="cmatriximage"
 
 # Check si l'image existe
 if [[ "$(docker images -q $IMAGE_NAME 2> /dev/null)" == "" ]]; then
