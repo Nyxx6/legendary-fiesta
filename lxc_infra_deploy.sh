@@ -612,8 +612,13 @@ done
 
 for server in $WAFS; do
 	echo "  Installation Nginx + ModSecurity (and CRS) sur $server"
-	# Install modsecurity and CRS; package names can vary across distros, so include both modsecurity and modsecurity-crs
-	lxc exec $server -- bash -c "apt update && DEBIAN_FRONTEND=noninteractive apt install -y nginx libnginx-mod-http-modsecurity modsecurity modsecurity-crs || true"
+	# Enable 'universe' (needed for some packages) and install nginx + libnginx-mod-http-modsecurity and CRS
+	lxc exec $server -- bash -c '
+		apt update && DEBIAN_FRONTEND=noninteractive apt install -y software-properties-common ca-certificates || true
+		add-apt-repository -y universe || true
+		apt update
+		DEBIAN_FRONTEND=noninteractive apt install -y nginx libnginx-mod-http-modsecurity modsecurity-crs
+	' || exit 1
 	lxc exec $server -- rm -f /etc/nginx/sites-enabled/default || true
 done
 
