@@ -175,12 +175,14 @@ frontend https_front
 # Backend to WAFs (HTTP - no SSL)
 backend serveurswaf
 	balance roundrobin
-	option httpchk GET / HTTP/1.1\r\nHost:\ healthcheck
-	
+	# Use http-check send/expect (newer HAProxy versions) instead of the legacy option httpchk
+	http-check send meth GET uri / ver HTTP/1.1 hdr Host healthcheck
+	http-check expect status 200
+
 	# Forward original client IP and protocol info
 	http-request set-header X-Real-IP %[src]
 	http-request set-header X-Client-IP %[src]
-	
+
 	# Send to WAFs on HTTP (port 80)
 	server waf1 20.0.0.2:80 check inter 2000 rise 2 fall 3
 	server waf2 20.0.0.3:80 check inter 2000 rise 2 fall 3
