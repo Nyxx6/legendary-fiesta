@@ -30,6 +30,37 @@ usage(){
     echo "  -d, -r       Supprime toute l'architecture"
 }
 
+# Helper to push a local file into a container path, creating parent dirs and checking for errors
+push_file() {
+	local src="$1"
+	local container="$2"
+	local dest_path="$3"
+
+	if [ ! -f "$src" ]; then
+		echo "[ERROR] Local source file $src does not exist" >&2
+		return 1
+	fi
+
+	# Ensure container is reachable
+	if ! lxc exec "$container" -- true >/dev/null 2>&1; then
+		echo "[ERROR] Container $container is not reachable or not running" >&2
+		return 1
+	fi
+
+	# Ensure destination directory exists inside container
+	local dest_dir
+	dest_dir=$(dirname "$dest_path")
+	lxc exec "$container" -- mkdir -p "$dest_dir" || true
+
+	# Push file (container:path) and check
+	if ! lxc file push "$src" "${container}${dest_path}"; then
+		echo "[ERROR] lxc file push $src ${container}${dest_path} failed" >&2
+		return 1
+	fi
+
+	return 0
+}
+
 DELETE_ALL=0
 WEB1="web1"
 WEB2="web2"
@@ -695,34 +726,34 @@ if [ -d ssl_certs ]; then
 	fi
 fi
 
-lxc file push haproxy.cfg $HA_PROXY/etc/haproxy/
-lxc file push nginx-waf.conf $WAF1/etc/nginx/nginx.conf
-lxc file push nginx-waf.conf $WAF2/etc/nginx/nginx.conf
-lxc file push nginx-web.conf $WEB1/etc/nginx/nginx.conf
-lxc file push nginx-web.conf $WEB3/etc/nginx/nginx.conf
-lxc file push ssi.conf $WEB1/etc/nginx/sites-enabled/
-lxc file push ssi.conf $WEB3/etc/nginx/sites-enabled/
-lxc file push gil.conf $WEB1/etc/nginx/sites-enabled/
-lxc file push gil.conf $WEB3/etc/nginx/sites-enabled/
+push_file haproxy.cfg $HA_PROXY /etc/haproxy/haproxy.cfg || { echo "Failed to push haproxy.cfg"; exit 1; }
+push_file nginx-waf.conf $WAF1 /etc/nginx/nginx.conf || { echo "Failed to push nginx-waf.conf to $WAF1"; exit 1; }
+push_file nginx-waf.conf $WAF2 /etc/nginx/nginx.conf || { echo "Failed to push nginx-waf.conf to $WAF2"; exit 1; }
+push_file nginx-web.conf $WEB1 /etc/nginx/nginx.conf || { echo "Failed to push nginx-web.conf to $WEB1"; exit 1; }
+push_file nginx-web.conf $WEB3 /etc/nginx/nginx.conf || { echo "Failed to push nginx-web.conf to $WEB3"; exit 1; }
+push_file ssi.conf $WEB1 /etc/nginx/sites-enabled/ssi.conf || { echo "Failed to push ssi.conf to $WEB1"; exit 1; }
+push_file ssi.conf $WEB3 /etc/nginx/sites-enabled/ssi.conf || { echo "Failed to push ssi.conf to $WEB3"; exit 1; }
+push_file gil.conf $WEB1 /etc/nginx/sites-enabled/gil.conf || { echo "Failed to push gil.conf to $WEB1"; exit 1; }
+push_file gil.conf $WEB3 /etc/nginx/sites-enabled/gil.conf || { echo "Failed to push gil.conf to $WEB3"; exit 1; }
 
 # Create web directories
 lxc exec $WEB1 -- mkdir -p /var/www/{ssi,gil}
 lxc exec $WEB3 -- mkdir -p /var/www/{ssi,gil}
 
-# Push HTML files
-lxc file push index-ssi.html $WEB1/var/www/ssi/index.html
-lxc file push index-ssi.html $WEB3/var/www/ssi/index.html
-lxc file push index-gil.html $WEB1/var/www/gil/index.html
-lxc file push index-gil.html $WEB3/var/www/gil/index.html
+# Push HTML files (create parents and verify)
+push_file index-ssi.html $WEB1 /var/www/ssi/index.html || { echo "Failed to push index-ssi.html to $WEB1"; exit 1; }
+push_file index-ssi.html $WEB3 /var/www/ssi/index.html || { echo "Failed to push index-ssi.html to $WEB3"; exit 1; }
+push_file index-gil.html $WEB1 /var/www/gil/index.html || { echo "Failed to push index-gil.html to $WEB1"; exit 1; }
+push_file index-gil.html $WEB3 /var/www/gil/index.html || { echo "Failed to push index-gil.html to $WEB3"; exit 1; }
 
 # Configure Apache (web2)
 lxc exec $WEB2 -- mkdir -p /var/www/{ssi,gil}
-lxc file push apache-ssi.conf $WEB2/etc/apache2/sites-available/
-lxc file push apache-gil.conf $WEB2/etc/apache2/sites-available/
-lxc file push index-ssi.html $WEB2/var/www/ssi/index.html
-lxc file push index-gil.html $WEB2/var/www/gil/index.html
-lxc exec $WEB2 -- a2ensite apache-ssi apache-gil
-lxc exec $WEB2 -- systemctl reload apache2
+push_file apache-ssi.conf $WEB2 /etc/apache2/sites-available/apache-ssi.conf || { echo "Failed to push apache-ssi.conf to $WEB2"; exit 1; }
+push_file apache-gil.conf $WEB2 /etc/apache2/sites-available/apache-gil.conf || { echo "Failed to push apache-gil.conf to $WEB2"; exit 1; }
+push_file index-ssi.html $WEB2 /var/www/ssi/index.html || { echo "Failed to push index-ssi.html to $WEB2"; exit 1; }
+push_file index-gil.html $WEB2 /var/www/gil/index.html || { echo "Failed to push index-gil.html to $WEB2"; exit 1; }
+lxc exec $WEB2 -- a2ensite apache-ssi apache-gil || true
+lxc exec $WEB2 -- systemctl reload apache2 || true
 
 echo "Configuration de ModSecurity sur les WAFs..."
 for server in $WAFS; do
