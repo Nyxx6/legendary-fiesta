@@ -1,43 +1,42 @@
-# Stage 1: Build
-FROM alpine:3.19 AS builder
+# Build Stage: Build the CMatrix binary
+FROM alpine:3.19 AS cmatrixbuilder
 
-# Installation des dépendances de compilation
-RUN apk add --no-cache \
+# Install necessary build dependencies
+RUN apk update --no-cache && \
+  apk add --no-cache \
     git \
-    gcc \
-    make \
-    musl-dev \
-    ncurses-dev \
-    ncurses-static \
     autoconf \
-    automake
+    automake \
+    alpine-sdk \
+    ncurses-dev \
+    ncurses-static && \
+  git clone https://github.com/abishekvashok/cmatrix.git . && \
+  autoreconf -i && \
+  ./configure LDFLAGS="-static" && \
+  make
 
-# Clonage du repository CMatrix
-WORKDIR /build
-RUN git clone https://github.com/abishekvashok/cmatrix.git
+# Final Stage: Minimized image with only the necessary runtime dependencies
+FROM alpine:3.19
 
-# Compilation de CMatrix
-WORKDIR /build/cmatrix
-RUN autoreconf -i && \
-    ./configure LDFLAGS="-static" && \
-    make
+# Labeling image metadata
+LABEL org.opencontainers.image.authors="Ryan Galazka" \
+      org.opencontainers.image.description="Container image for https://github.com/abishekvashok/cmatrix"
 
-# Stage 2: Image finale minimale
-FROM scratch
+# Install terminfo files and create a non-root user
+RUN apk update --no-cache && \
+  apk add --no-cache \
+    ncurses-terminfo-base && \
+  adduser -g "cmatrixuser" -s /usr/sbin/nologin -D -H cmatrixuser
 
-# Copie uniquement du binaire compilé
-COPY --from=builder /build/cmatrix/cmatrix /cmatrix
+# Copy the statically compiled cmatrix binary from the build stage
+COPY --from=cmatrixbuilder /cmatrix/cmatrix /usr/local/bin/cmatrix
 
-# Copie des fichiers terminfo nécessaires pour ncurses
-COPY --from=builder /usr/share/terminfo/x/xterm /terminfo/x/xterm
-COPY --from=builder /usr/share/terminfo/x/xterm-256color /terminfo/x/xterm-256color
+# Set the user to run the application as a non-root user
+USER cmatrixuser
 
-# Variables d'environnement
-ENV TERM=xterm-256color
-ENV TERMINFO=/terminfo
+# Set default environment variable for terminfo path
+ENV TERMINFO=/usr/share/terminfo
 
-# Définir le point d'entrée
-ENTRYPOINT ["/cmatrix"]
-
-# Options par défaut (peut être surchargé)
+# Set entrypoint and default arguments
+ENTRYPOINT ["/usr/local/bin/cmatrix"]
 CMD ["-b"]
