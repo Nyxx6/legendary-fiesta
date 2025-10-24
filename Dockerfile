@@ -9,12 +9,15 @@ RUN apk update --no-cache && \
     automake \
     alpine-sdk \
     ncurses-dev \
-    ncurses-static && \
-  git clone https://github.com/abishekvashok/cmatrix.git . && \
+    ncurses-static
+
+# Create a clean directory for the repository and clone it
+WORKDIR /cmatrix
+RUN git clone https://github.com/abishekvashok/cmatrix.git . && \
   autoreconf -i && \
   ./configure LDFLAGS="-static" && \
   make
-
+  
 # Final Stage: Minimized image with only the necessary runtime dependencies
 FROM alpine:3.19
 
