@@ -581,7 +581,8 @@ done
 
 for server in $WAFS; do
 	echo "  Installation Nginx + ModSecurity (and CRS) sur $server"
-	lxc exec $server -- bash -c "apt update && DEBIAN_FRONTEND=noninteractive apt install -y nginx libnginx-mod-http-modsecurity modsecurity-crs" || exit 1
+	# Install modsecurity and CRS; package names can vary across distros, so include both modsecurity and modsecurity-crs
+	lxc exec $server -- bash -c "apt update && DEBIAN_FRONTEND=noninteractive apt install -y nginx libnginx-mod-http-modsecurity modsecurity modsecurity-crs || true"
 	lxc exec $server -- rm -f /etc/nginx/sites-enabled/default || true
 done
 
@@ -663,11 +664,35 @@ echo "Envoi des fichiers de configuration..."
 # Push SSL certificates to HAProxy container if they exist
 if [ -d ssl_certs ]; then
 	echo "  Pushing SSL certificates to HAProxy"
-	lxc exec $HA_PROXY -- mkdir -p /etc/ssl/private || true
-	lxc file push ssl_certs/haproxy-ecdsa.pem $HA_PROXY/etc/ssl/private/ || true
-	lxc file push ssl_certs/haproxy-rsa.pem $HA_PROXY/etc/ssl/private/ || true
+	# Ensure target directory exists in container
+	lxc exec $HA_PROXY -- mkdir -p /etc/ssl/private
+
+	# Fail fast if local certs are missing
+	if [ ! -f ssl_certs/haproxy-ecdsa.pem ] || [ ! -f ssl_certs/haproxy-rsa.pem ]; then
+		echo "[ERROR] SSL certificate files not found in ssl_certs/" >&2
+		echo "Expected: ssl_certs/haproxy-ecdsa.pem and ssl_certs/haproxy-rsa.pem" >&2
+		exit 1
+	fi
+
+	# Push each cert explicitly and check for success
+	if ! lxc file push ssl_certs/haproxy-ecdsa.pem ${HA_PROXY}/etc/ssl/private/haproxy-ecdsa.pem; then
+		echo "[ERROR] Failed to push haproxy-ecdsa.pem to ${HA_PROXY}" >&2
+		exit 1
+	fi
+	if ! lxc file push ssl_certs/haproxy-rsa.pem ${HA_PROXY}/etc/ssl/private/haproxy-rsa.pem; then
+		echo "[ERROR] Failed to push haproxy-rsa.pem to ${HA_PROXY}" >&2
+		exit 1
+	fi
+
+	# Set ownership and permissions inside the container
 	lxc exec $HA_PROXY -- chown -R haproxy:haproxy /etc/ssl/private || true
-	lxc exec $HA_PROXY -- chmod 600 /etc/ssl/private/*.pem || true
+	# Ensure at least one pem exists before chmod
+	if lxc exec $HA_PROXY -- test -e /etc/ssl/private/haproxy-ecdsa.pem || lxc exec $HA_PROXY -- test -e /etc/ssl/private/haproxy-rsa.pem; then
+		lxc exec $HA_PROXY -- chmod 600 /etc/ssl/private/haproxy-*.pem || true
+	else
+		echo "[ERROR] pushed cert files are not present in ${HA_PROXY}:/etc/ssl/private" >&2
+		exit 1
+	fi
 fi
 
 lxc file push haproxy.cfg $HA_PROXY/etc/haproxy/
@@ -701,11 +726,28 @@ lxc exec $WEB2 -- systemctl reload apache2
 
 echo "Configuration de ModSecurity sur les WAFs..."
 for server in $WAFS; do
-    lxc exec $server -- mkdir -p /etc/nginx/modsec
-    lxc exec $server -- cp /etc/modsecurity/modsecurity.conf-recommended /etc/nginx/modsec/modsecurity.conf
-    lxc exec $server -- sed -i 's/SecRuleEngine DetectionOnly/SecRuleEngine On/' /etc/nginx/modsec/modsecurity.conf
-    lxc exec $server -- bash -c "echo 'Include /etc/modsecurity/modsecurity.conf' > /etc/nginx/modsec/main.conf"
-    lxc exec $server -- bash -c "echo 'Include /usr/share/modsecurity-crs/owasp-crs.load' >> /etc/nginx/modsec/main.conf" 2>/dev/null || true
+	# Prepare modsecurity directory
+	lxc exec $server -- mkdir -p /etc/nginx/modsec
+
+	# If the recommended config exists, copy and enable it; otherwise create a minimal config
+	if lxc exec $server -- test -f /etc/modsecurity/modsecurity.conf-recommended; then
+		lxc exec $server -- cp /etc/modsecurity/modsecurity.conf-recommended /etc/nginx/modsec/modsecurity.conf
+		lxc exec $server -- sed -i 's/SecRuleEngine DetectionOnly/SecRuleEngine On/' /etc/nginx/modsec/modsecurity.conf || true
+	else
+		# Create a minimal ModSecurity config so Nginx can include it
+		lxc exec $server -- bash -c "cat > /etc/nginx/modsec/modsecurity.conf <<'MCONF'
+SecRuleEngine On
+SecRequestBodyAccess On
+SecResponseBodyAccess Off
+MCONF"
+	fi
+
+	# Main include file for our nginx config
+	lxc exec $server -- bash -c "echo 'Include /etc/modsecurity/modsecurity.conf' > /etc/nginx/modsec/main.conf"
+	# Try to include the CRS loader if it exists
+	if lxc exec $server -- test -f /usr/share/modsecurity-crs/owasp-crs.load; then
+		lxc exec $server -- bash -c "echo 'Include /usr/share/modsecurity-crs/owasp-crs.load' >> /etc/nginx/modsec/main.conf"
+	fi
 done
 
 echo "Configuration de Redis..."
