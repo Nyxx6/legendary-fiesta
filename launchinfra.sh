@@ -337,7 +337,7 @@ server {
 
 	location ~ \.php$ {
 		include snippets/fastcgi-php.conf;
-		fastcgi_pass unix:/var/run/php/php8.3-fpm.sock;
+		fastcgi_pass unix:/var/run/php/php-fpm.sock;
 		
 		# Pass security headers to PHP
 		fastcgi_param HTTPS $http_x_forwarded_proto;
@@ -366,7 +366,7 @@ server {
 
 	location ~ \.php$ {
 		include snippets/fastcgi-php.conf;
-		fastcgi_pass unix:/var/run/php/php8.3-fpm.sock;
+		fastcgi_pass unix:/var/run/php/php-fpm.sock;
 		
 		fastcgi_param HTTPS $http_x_forwarded_proto;
 		fastcgi_param SERVER_PORT $http_x_forwarded_port;
