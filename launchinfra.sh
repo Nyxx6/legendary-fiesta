@@ -607,8 +607,12 @@ for server in $NGINX_SERVER; do
 	lxc exec $server -- bash -c "apt update && DEBIAN_FRONTEND=noninteractive apt install -y nginx && (apt install -y php8.3-fpm php8.3-cli php8.3-common php8.3-mbstring php8.3-xml php8.3-curl php8.3-gd php8.3-zip || apt install -y php-fpm)" || exit 1
 	lxc exec $server -- rm -f /etc/nginx/sites-enabled/default || true
 	lxc exec $server -- bash -lc "chown -R www-data:www-data /var/www || true"
-	# enable/start php-fpm service if present
-	lxc exec $server -- bash -lc "if systemctl list-unit-files | grep -q php8.3-fpm; then systemctl enable --now php8.3-fpm; else systemctl enable --now php*-fpm || true; fi" || true
+	# enable/start php-fpm service and create symlink for socket
+	lxc exec $server -- bash -c 'for svc in php8.3-fpm php8.2-fpm php8.1-fpm php-fpm; do if systemctl list-unit-files | grep -q "^$svc"; then systemctl enable --now $svc; break; fi; done' || true
+	# Wait a moment for PHP-FPM to create socket
+	sleep 2
+	# Create generic socket symlink to actual PHP-FPM socket
+	lxc exec $server -- bash -c 'ACTUAL_SOCK=$(ls /var/run/php/php*-fpm.sock 2>/dev/null | head -1); if [ -n "$ACTUAL_SOCK" ]; then ln -sf "$ACTUAL_SOCK" /var/run/php/php-fpm.sock; echo "PHP socket linked: $ACTUAL_SOCK -> /var/run/php/php-fpm.sock"; else echo "WARNING: No PHP-FPM socket found on $server" >&2; fi' || true
 done
 
 for server in $WAFS; do
@@ -725,7 +729,7 @@ if [ -d ssl_certs ]; then
 	lxc exec $HA_PROXY -- chown -R haproxy:haproxy /etc/ssl/private || true
 	# Ensure at least one pem exists before chmod
 	if lxc exec $HA_PROXY -- test -e /etc/ssl/private/haproxy-ecdsa.pem || lxc exec $HA_PROXY -- test -e /etc/ssl/private/haproxy-rsa.pem; then
-		lxc exec $HA_PROXY -- chmod 600 /etc/ssl/private/haproxy-*.pem || true
+		lxc exec $HA_PROXY -- bash -c 'chmod 600 /etc/ssl/private/haproxy-*.pem' || true
 	else
 		echo "[ERROR] pushed cert files are not present in ${HA_PROXY}:/etc/ssl/private" >&2
 		exit 1
