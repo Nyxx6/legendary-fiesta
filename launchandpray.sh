@@ -264,9 +264,15 @@ echo "Installation des paquets..."
 
 lxc exec $HA_PROXY -- apt update && lxc exec $HA_PROXY -- apt install -y haproxy
 
-for w in $WAFS; do
-    lxc exec $w -- apt update
-    lxc exec $w -- apt install -y nginx libnginx-mod-http-modsecurity modsecurity-crs
+for server in $WAFS; do
+	echo "  Installation Nginx + ModSecurity (and CRS) sur $server"
+	lxc exec $server -- bash -c '
+		apt update && DEBIAN_FRONTEND=noninteractive apt install -y software-properties-common ca-certificates || true
+		add-apt-repository -y universe || true
+		apt update
+		DEBIAN_FRONTEND=noninteractive apt install -y nginx libnginx-mod-http-modsecurity modsecurity-crs
+	' || exit 1
+	lxc exec $server -- rm -f /etc/nginx/sites-enabled/default || true
 done
 
 for w in $NGINX_SERVER; do
