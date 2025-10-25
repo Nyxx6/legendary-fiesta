@@ -788,6 +788,8 @@ MCONF"
 	# Try to include the CRS loader if it exists
 	if lxc exec $server -- test -f /usr/share/modsecurity-crs/owasp-crs.load; then
 		lxc exec $server -- bash -c "echo 'Include /usr/share/modsecurity-crs/owasp-crs.load' >> /etc/nginx/modsec/main.conf"
+		# Some environments don't support IncludeOptional in CRS loader; force Include
+		lxc exec $server -- bash -c "sed -i 's/^IncludeOptional/Include/' /usr/share/modsecurity-crs/owasp-crs.load"
 	fi
 done
 
@@ -800,8 +802,20 @@ echo "Redis password (store it safely): ${REDIS_PASS}"
 
 echo "Redémarrage des services..."
 lxc exec $HA_PROXY -- systemctl restart haproxy
+
+echo "Testing nginx configurations..."
 for n in $NGINX_SERVER $WAFS; do
-   lxc exec $n -- systemctl restart nginx
+	echo "  Testing nginx config on $n"
+	if ! lxc exec $n -- nginx -t 2>&1; then
+		echo "[ERROR] Nginx config test failed on $n" >&2
+		echo "Showing nginx error log:" >&2
+		lxc exec $n -- tail -20 /var/log/nginx/error.log || true
+		echo "Showing full nginx -t output:" >&2
+		lxc exec $n -- nginx -t || true
+		exit 1
+	fi
+	echo "  Restarting nginx on $n"
+	lxc exec $n -- systemctl restart nginx
 done
 lxc exec $WEB2 -- systemctl restart apache2
 
