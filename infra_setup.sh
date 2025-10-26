@@ -219,19 +219,22 @@ EOF"
     lxc exec $waf -- systemctl restart nginx
 done
 
-# Generate SSL certificates
-echo "Generating SSL certificates..."
-mkdir -p ssl_certs
-openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-    -keyout ssl_certs/haproxy.key -out ssl_certs/haproxy.crt \
-    -subj "/CN=*.local" -addext "subjectAltName=DNS:*.local"
+# Generate SSL certificates 
+echo "Generating SSL certificates in HAProxy container..."
+lxc exec $HA_PROXY -- bash -c "
+    mkdir -p /etc/ssl/private
+    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+        -keyout /etc/ssl/private/haproxy.pem \
+        -out /etc/ssl/private/haproxy.pem \
+        -subj '/CN=*.local' \
+        -addext 'subjectAltName=DNS:*.local'
+    chmod 600 /etc/ssl/private/haproxy.pem
+    chown -R haproxy:haproxy /etc/ssl/private
+"
 
-# Configure HAProxy
-echo "Configuring HAProxy..."
-lxc exec $HA_PROXY -- bash -c "apt install -y haproxy"
-lxc file push ssl_certs/haproxy.key ${HA_PROXY}/etc/ssl/private/
-lxc file push ssl_certs/haproxy.crt ${HA_PROXY}/etc/ssl/private/
-lxc exec $HA_PROXY -- chown -R haproxy:haproxy /etc/ssl/private
+# Install HAProxy
+echo "Installing HAProxy..."
+lxc exec $HA_PROXY -- apt install -y haproxy
 
 lxc exec $HA_PROXY -- bash -c "cat > /etc/haproxy/haproxy.cfg << 'EOF'
 global
