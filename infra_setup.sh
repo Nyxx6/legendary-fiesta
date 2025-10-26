@@ -219,6 +219,10 @@ EOF"
     lxc exec $waf -- systemctl restart nginx
 done
 
+lxc exec $HA_PROXY -- bash -c "
+    apt update && apt install -y haproxy
+    useradd -r haproxy || true 
+"
 # Generate SSL certificates 
 echo "Generating SSL certificates in HAProxy container..."
 lxc exec $HA_PROXY -- bash -c "
@@ -231,10 +235,6 @@ lxc exec $HA_PROXY -- bash -c "
     chmod 600 /etc/ssl/private/haproxy.pem
     chown -R haproxy:haproxy /etc/ssl/private
 "
-
-# Install HAProxy
-echo "Installing HAProxy..."
-lxc exec $HA_PROXY -- apt install -y haproxy
 
 lxc exec $HA_PROXY -- bash -c "cat > /etc/haproxy/haproxy.cfg << 'EOF'
 global
