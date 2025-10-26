@@ -129,23 +129,49 @@ for c in $WEB1 $WEB2 $WEB3 $WAF1 $WAF2 $HA_PROXY $REDIS; do
     lxc launch ubuntu:24.04 $c 2>/dev/null || true
 done
 
-echo "Waiting for containers..."
-sleep 10
+echo "Waiting for containers to initialize..."
+for c in $WEB1 $WEB2 $WEB3 $WAF1 $WAF2 $HA_PROXY $REDIS; do
+	timeout=30
+	while [ $timeout -gt 0 ]; do
+		lxc exec $c -- systemctl is-system-running --wait 2>/dev/null && break
+		sleep 2
+		timeout=$((timeout-2))
+	done
+done
+
+# Fix time sync issues
+echo "Syncing time..."
+for c in $WEB1 $WEB2 $WEB3 $WAF1 $WAF2 $HA_PROXY $REDIS; do
+	lxc exec $c -- timedatectl set-ntp true 2>/dev/null || true
+done
+sleep 5
 
 echo "Installing packages..."
 for c in $WEB1 $WEB3; do
-	lxc exec $c -- bash -c "apt update && DEBIAN_FRONTEND=noninteractive apt install -y nginx" &
+	lxc exec $c -- bash -c "
+		for i in 1 2 3; do apt update 2>/dev/null && break; sleep 10; done
+		DEBIAN_FRONTEND=noninteractive apt install -y nginx
+	" &
 done
 wait
 
 for c in $WAF1 $WAF2; do
-	lxc exec $c -- bash -c "add-apt-repository -y universe && apt update && DEBIAN_FRONTEND=noninteractive apt install -y nginx libnginx-mod-http-modsecurity modsecurity-crs" &
+	lxc exec $c -- bash -c "
+		# Retry apt update if time sync issue
+		for i in 1 2 3; do
+			add-apt-repository -y universe 2>/dev/null || true
+			apt update 2>/dev/null && break
+			echo 'Retrying apt update (attempt \$i)...'
+			sleep 10
+		done
+		DEBIAN_FRONTEND=noninteractive apt install -y nginx libnginx-mod-http-modsecurity modsecurity-crs
+	" &
 done
 wait
 
-lxc exec $WEB2 -- bash -c "apt update && DEBIAN_FRONTEND=noninteractive apt install -y apache2" &
-lxc exec $HA_PROXY -- bash -c "apt update && DEBIAN_FRONTEND=noninteractive apt install -y haproxy" &
-lxc exec $REDIS -- bash -c "apt update && DEBIAN_FRONTEND=noninteractive apt install -y redis-server" &
+lxc exec $WEB2 -- bash -c "for i in 1 2 3; do apt update 2>/dev/null && break; sleep 10; done; DEBIAN_FRONTEND=noninteractive apt install -y apache2" &
+lxc exec $HA_PROXY -- bash -c "for i in 1 2 3; do apt update 2>/dev/null && break; sleep 10; done; DEBIAN_FRONTEND=noninteractive apt install -y haproxy" &
+lxc exec $REDIS -- bash -c "for i in 1 2 3; do apt update 2>/dev/null && break; sleep 10; done; DEBIAN_FRONTEND=noninteractive apt install -y redis-server" &
 wait
 
 echo "Creating networks..."
