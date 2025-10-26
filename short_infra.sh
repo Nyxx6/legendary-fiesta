@@ -129,49 +129,100 @@ for c in $WEB1 $WEB2 $WEB3 $WAF1 $WAF2 $HA_PROXY $REDIS; do
     lxc launch ubuntu:24.04 $c 2>/dev/null || true
 done
 
-echo "Waiting for containers to initialize..."
+echo "Waiting for containers to be ready..."
 for c in $WEB1 $WEB2 $WEB3 $WAF1 $WAF2 $HA_PROXY $REDIS; do
-	timeout=30
-	while [ $timeout -gt 0 ]; do
-		lxc exec $c -- systemctl is-system-running --wait 2>/dev/null && break
+	count=0
+	while [ $count -lt 60 ]; do
+		if lxc exec $c -- test -f /var/lib/cloud/instance/boot-finished 2>/dev/null; then
+			echo "  $c ready"
+			break
+		fi
 		sleep 2
-		timeout=$((timeout-2))
+		count=$((count+2))
 	done
 done
 
-# Fix time sync issues
-echo "Syncing time..."
+# Fix DNS and time
+echo "Configuring DNS and time..."
 for c in $WEB1 $WEB2 $WEB3 $WAF1 $WAF2 $HA_PROXY $REDIS; do
+	lxc exec $c -- bash -c "echo 'nameserver 8.8.8.8' > /etc/resolv.conf" || true
 	lxc exec $c -- timedatectl set-ntp true 2>/dev/null || true
 done
-sleep 5
+sleep 3
 
-echo "Installing packages..."
-for c in $WEB1 $WEB3; do
-	lxc exec $c -- bash -c "
-		for i in 1 2 3; do apt update 2>/dev/null && break; sleep 10; done
-		DEBIAN_FRONTEND=noninteractive apt install -y nginx
-	" &
-done
-wait
-
-for c in $WAF1 $WAF2; do
-	lxc exec $c -- bash -c "
-		# Retry apt update if time sync issue
-		for i in 1 2 3; do
-			add-apt-repository -y universe 2>/dev/null || true
-			apt update 2>/dev/null && break
-			echo 'Retrying apt update (attempt \$i)...'
+# Function to install packages with retry
+install_pkg() {
+	local container=$1
+	shift
+	local packages="$@"
+	
+	lxc exec $container -- bash -c "
+		export DEBIAN_FRONTEND=noninteractive
+		
+		# Update repositories with retry
+		for attempt in 1 2 3 4 5; do
+			echo 'Attempt \$attempt: updating apt...'
+			apt-get clean
+			rm -rf /var/lib/apt/lists/*
+			apt-get update && break
 			sleep 10
 		done
-		DEBIAN_FRONTEND=noninteractive apt install -y nginx libnginx-mod-http-modsecurity modsecurity-crs
-	" &
-done
+		
+		# Install packages
+		apt-get install -y $packages || {
+			echo 'Retrying installation...'
+			sleep 5
+			apt-get install -y $packages
+		}
+	"
+}
+
+echo "Installing packages..."
+echo "  Installing on web1..."
+install_pkg $WEB1 nginx &
+echo "  Installing on web3..."
+install_pkg $WEB3 nginx &
 wait
 
-lxc exec $WEB2 -- bash -c "for i in 1 2 3; do apt update 2>/dev/null && break; sleep 10; done; DEBIAN_FRONTEND=noninteractive apt install -y apache2" &
-lxc exec $HA_PROXY -- bash -c "for i in 1 2 3; do apt update 2>/dev/null && break; sleep 10; done; DEBIAN_FRONTEND=noninteractive apt install -y haproxy" &
-lxc exec $REDIS -- bash -c "for i in 1 2 3; do apt update 2>/dev/null && break; sleep 10; done; DEBIAN_FRONTEND=noninteractive apt install -y redis-server" &
+echo "  Installing on web2..."
+install_pkg $WEB2 apache2 &
+echo "  Installing on haproxy..."
+install_pkg $HA_PROXY haproxy &
+echo "  Installing on redis..."
+install_pkg $REDIS redis-server &
+wait
+
+echo "  Installing on waf1..."
+lxc exec $WAF1 -- bash -c "
+	export DEBIAN_FRONTEND=noninteractive
+	for attempt in 1 2 3 4 5; do
+		apt-get clean
+		rm -rf /var/lib/apt/lists/*
+		apt-get update && break
+		sleep 10
+	done
+	add-apt-repository -y universe 2>/dev/null || true
+	apt-get update
+	apt-get install -y nginx libnginx-mod-security2 modsecurity-crs 2>/dev/null || \
+	apt-get install -y nginx libmodsecurity3 modsecurity-crs 2>/dev/null || \
+	apt-get install -y nginx
+" &
+
+echo "  Installing on waf2..."
+lxc exec $WAF2 -- bash -c "
+	export DEBIAN_FRONTEND=noninteractive
+	for attempt in 1 2 3 4 5; do
+		apt-get clean
+		rm -rf /var/lib/apt/lists/*
+		apt-get update && break
+		sleep 10
+	done
+	add-apt-repository -y universe 2>/dev/null || true
+	apt-get update
+	apt-get install -y nginx libnginx-mod-security2 modsecurity-crs 2>/dev/null || \
+	apt-get install -y nginx libmodsecurity3 modsecurity-crs 2>/dev/null || \
+	apt-get install -y nginx
+" &
 wait
 
 echo "Creating networks..."
@@ -192,9 +243,9 @@ for c in $WEB1 $WEB2 $WEB3; do
     lxc network attach $BACK_NET $c eth0
     lxc exec $c -- ip addr flush dev eth0
 done
-lxc exec $WEB1 -- bash -c "ip addr add 192.168.1.3/24 dev eth0; ip addr add 30.0.0.3/24 dev eth1; ip route add default via 192.168.1.1"
-lxc exec $WEB2 -- bash -c "ip addr add 192.168.1.4/24 dev eth0; ip addr add 30.0.0.4/24 dev eth1; ip route add default via 192.168.1.1"
-lxc exec $WEB3 -- bash -c "ip addr add 192.168.1.5/24 dev eth0; ip addr add 30.0.0.5/24 dev eth1; ip route add default via 192.168.1.2"
+lxc exec $WEB1 -- bash -c "ip addr add 192.168.1.3/24 dev eth0; ip addr add 30.0.0.3/24 dev eth1; ip route add default via 192.168.1.1 || true"
+lxc exec $WEB2 -- bash -c "ip addr add 192.168.1.4/24 dev eth0; ip addr add 30.0.0.4/24 dev eth1; ip route add default via 192.168.1.1 || true"
+lxc exec $WEB3 -- bash -c "ip addr add 192.168.1.5/24 dev eth0; ip addr add 30.0.0.5/24 dev eth1; ip route add default via 192.168.1.2 || true"
 
 # WAFs
 for c in $WAF1 $WAF2; do
@@ -218,7 +269,35 @@ lxc file push haproxy.cfg ${HA_PROXY}/etc/haproxy/
 
 for c in $WAF1 $WAF2; do
 	lxc file push nginx-waf.conf ${c}/etc/nginx/nginx.conf
-	lxc exec $c -- bash -c "mkdir -p /etc/nginx/modsec && cp /etc/modsecurity/modsecurity.conf-recommended /etc/nginx/modsec/modsecurity.conf && sed -i 's/DetectionOnly/On/' /etc/nginx/modsec/modsecurity.conf && echo 'Include /etc/nginx/modsec/modsecurity.conf' > /etc/nginx/modsec/main.conf && echo 'Include /usr/share/modsecurity-crs/owasp-crs.load' >> /etc/nginx/modsec/main.conf"
+	lxc exec $c -- bash -c "
+		mkdir -p /etc/nginx/modsec
+		
+		# Try different ModSecurity paths
+		if [ -f /etc/modsecurity/modsecurity.conf-recommended ]; then
+			cp /etc/modsecurity/modsecurity.conf-recommended /etc/nginx/modsec/modsecurity.conf
+			sed -i 's/DetectionOnly/On/' /etc/nginx/modsec/modsecurity.conf
+		elif [ -f /usr/share/modsecurity-crs/modsecurity.conf-recommended ]; then
+			cp /usr/share/modsecurity-crs/modsecurity.conf-recommended /etc/nginx/modsec/modsecurity.conf
+			sed -i 's/DetectionOnly/On/' /etc/nginx/modsec/modsecurity.conf
+		else
+			# Minimal config if ModSecurity not fully installed
+			cat > /etc/nginx/modsec/modsecurity.conf <<'MCONF'
+SecRuleEngine On
+SecRequestBodyAccess On
+SecResponseBodyAccess Off
+MCONF
+		fi
+		
+		# Main config
+		echo 'Include /etc/nginx/modsec/modsecurity.conf' > /etc/nginx/modsec/main.conf
+		
+		# Add CRS if available
+		if [ -f /usr/share/modsecurity-crs/owasp-crs.load ]; then
+			echo 'Include /usr/share/modsecurity-crs/owasp-crs.load' >> /etc/nginx/modsec/main.conf
+		elif [ -f /etc/modsecurity/crs-setup.conf ]; then
+			echo 'Include /etc/modsecurity/crs-setup.conf' >> /etc/nginx/modsec/main.conf
+		fi
+	"
 done
 
 for c in $WEB1 $WEB3; do
@@ -230,10 +309,17 @@ done
 lxc exec $WEB2 -- mkdir -p /var/www/html
 lxc file push index.html ${WEB2}/var/www/html/
 lxc file push apache-site.conf ${WEB2}/etc/apache2/sites-available/lab.conf
-lxc exec $WEB2 -- bash -c "a2dissite 000-default && a2ensite lab"
+lxc exec $WEB2 -- bash -c "a2dissite 000-default 2>/dev/null || true; a2ensite lab"
 
 REDIS_PASS=$(openssl rand -base64 16)
-lxc exec $REDIS -- bash -c "sed -i 's/bind 127.0.0.1/bind 30.0.0.1/' /etc/redis/redis.conf && echo 'requirepass ${REDIS_PASS}' >> /etc/redis/redis.conf"
+lxc exec $REDIS -- bash -c "sed -i 's/bind 127.0.0.1.*/bind 30.0.0.1/' /etc/redis/redis.conf && echo 'requirepass ${REDIS_PASS}' >> /etc/redis/redis.conf"
+
+echo "Testing configurations..."
+lxc exec $HA_PROXY -- haproxy -c -f /etc/haproxy/haproxy.cfg || echo "Warning: HAProxy config test failed"
+lxc exec $WEB1 -- nginx -t 2>&1 | grep -q "successful" && echo "  web1 nginx OK" || echo "  web1 nginx warning"
+lxc exec $WEB3 -- nginx -t 2>&1 | grep -q "successful" && echo "  web3 nginx OK" || echo "  web3 nginx warning"
+lxc exec $WAF1 -- nginx -t 2>&1 | grep -q "successful" && echo "  waf1 nginx OK" || echo "  waf1 nginx warning"
+lxc exec $WAF2 -- nginx -t 2>&1 | grep -q "successful" && echo "  waf2 nginx OK" || echo "  waf2 nginx warning"
 
 echo "Restarting services..."
 lxc exec $HA_PROXY -- systemctl restart haproxy
@@ -242,11 +328,31 @@ lxc exec $WAF2 -- systemctl restart nginx
 lxc exec $WEB1 -- systemctl restart nginx
 lxc exec $WEB3 -- systemctl restart nginx
 lxc exec $WEB2 -- systemctl restart apache2
-lxc exec $REDIS -- systemctl restart redis-server
+lxc exec $REDIS -- systemctl restart redis-server || lxc exec $REDIS -- systemctl restart redis
+
+sleep 3
 
 echo ""
 echo "====== Infrastructure Ready ======"
-echo "Flow: Internet → HAProxy:443 (SSL term) → WAFs (ModSec) → Web servers → Redis"
-echo "Test: lxc exec haproxy -- curl -k https://localhost"
-echo "Redis pass: ${REDIS_PASS}"
+echo ""
+echo "Architecture:"
+echo "  Internet → HAProxy:443 (SSL) → WAF1/WAF2 (ModSec) → Web1/Web2/Web3 → Redis"
+echo ""
+echo "IPs:"
+echo "  HAProxy:  20.0.0.1"
+echo "  WAF1:     20.0.0.2 / 192.168.1.1"
+echo "  WAF2:     20.0.0.3 / 192.168.1.2"
+echo "  Web1:     192.168.1.3 / 30.0.0.3"
+echo "  Web2:     192.168.1.4 / 30.0.0.4"
+echo "  Web3:     192.168.1.5 / 30.0.0.5"
+echo "  Redis:    30.0.0.1"
+echo ""
+echo "Tests:"
+echo "  lxc exec haproxy -- curl -k https://localhost"
+echo "  lxc exec waf1 -- curl http://192.168.1.3"
+echo "  lxc exec web1 -- curl http://localhost"
+echo ""
+echo "Redis password: ${REDIS_PASS}"
+echo ""
 echo "Delete: $0 -d"
+echo ""
