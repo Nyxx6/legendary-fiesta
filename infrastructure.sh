@@ -503,15 +503,16 @@ echo "Installation des paquets sur les serveurs..."
 
 for server in $NGINX_SERVER; do
 	echo "  Installation Nginx + PHP-FPM sur $server"
-	lxc exec $server -- bash -c "apt update && DEBIAN_FRONTEND=noninteractive apt install -y nginx php-fpm php-cli php-common php-mbstring php-curl" || exit 1
+	# Try to install php8.3, fallback to generic php-fpm if not available
+	lxc exec $server -- bash -c "apt update && DEBIAN_FRONTEND=noninteractive apt install -y nginx && (apt install -y php8.3-fpm php8.3-cli php8.3-common php8.3-mbstring php8.3-xml php8.3-curl php8.3-gd php8.3-zip || apt install -y php-fpm)" || exit 1
 	lxc exec $server -- rm -f /etc/nginx/sites-enabled/default || true
 	lxc exec $server -- bash -lc "chown -R www-data:www-data /var/www || true"
-	# enable/start service
-	lxc exec $server -- systemctl enable --now php-fpm || true
+	# enable/start php-fpm service and create symlink for socket
+	lxc exec $server -- bash -c 'for svc in php8.3-fpm php8.2-fpm php8.1-fpm php-fpm; do if systemctl list-unit-files | grep -q "^$svc"; then systemctl enable --now $svc; break; fi; done' || true
+	# Wait a moment for PHP-FPM to create socket
 	sleep 2
-	# Create generic socket symlink to the socket
+	# Create generic socket symlink to actual PHP-FPM socket
 	lxc exec $server -- bash -c 'ACTUAL_SOCK=$(ls /var/run/php/php*-fpm.sock 2>/dev/null | head -1); if [ -n "$ACTUAL_SOCK" ] && [ "$ACTUAL_SOCK" != "/var/run/php/php-fpm.sock" ]; then ln -sf "$ACTUAL_SOCK" /var/run/php/php-fpm.sock; echo "PHP socket linked: $ACTUAL_SOCK -> /var/run/php/php-fpm.sock"; fi' || true
-
 done
 
 for server in $WAFS; do
