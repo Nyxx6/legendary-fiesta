@@ -668,6 +668,8 @@ push_file index-ssi.html $WEB1 /var/www/ssi/index.html || { echo "Failed to push
 push_file index-ssi.html $WEB3 /var/www/ssi/index.html || { echo "Failed to push index-ssi.html to $WEB3"; exit 1; }
 push_file index-gil.html $WEB1 /var/www/gil/index.html || { echo "Failed to push index-gil.html to $WEB1"; exit 1; }
 push_file index-gil.html $WEB3 /var/www/gil/index.html || { echo "Failed to push index-gil.html to $WEB3"; exit 1; }
+push_file index-ssi.php $WEB1 /var/www/ssi/index.php || { echo "Failed to push index-ssi.php to $WEB1"; exit 1; }
+push_file index-ssi.php $WEB3 /var/www/ssi/index.php || { echo "Failed to push index-ssi.php to $WEB3"; exit 1; }
 
 # Configure Apache (web2)
 lxc exec $WEB2 -- mkdir -p /var/www/{gil}
@@ -754,7 +756,9 @@ echo "Architecture:"
 echo "  Internet → HAProxy (20.0.0.1) → WAFs (20.0.0.2-3) → Web Servers (192.168.1.3-5) → Redis (30.0.0.1)"
 echo ""
 echo "Pour tester:"
-echo "  lxc exec haproxy -- curl http://20.0.0.2"
+echo "  curl -k https://ssi.local"
+echo "  curl -I http://gil.local"
+echo "  lxc exec haproxy -- curl -k http://gil.local"
 echo "  lxc exec waf1 -- curl http://192.168.1.3"
 echo ""
 echo "Pour supprimer:"
