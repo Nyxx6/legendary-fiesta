@@ -1,0 +1,45 @@
+SSLProtocol all -SSLv3 -TLSv1 -TLSv1.1
+SSLCipherSuite ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384
+SSLHonorCipherOrder off
+SSLSessionTickets off
+
+
+# Test avec TLS 1.0 (devrait échouer)
+openssl s_client -connect [IP]:443 -tls1
+
+# Test avec TLS 1.2 (devrait réussir)
+openssl s_client -connect [IP]:443 -tls1_2
+
+# Test avec cipher faible (devrait échouer)
+openssl s_client -connect [IP]:443 -cipher 'DES-CBC3-SHA'
+
+
+    # Activation de HSTS pour 1 an
+    Header always set Strict-Transport-Security \
+        "max-age=31536000; includeSubDomains"
+
+
+sudo apt-get install libapache2-mod-security2
+sudo apt-get install modsecurity-crs
+
+Fichier : \texttt{/etc/modsecurity/modsecurity.conf}
+
+\begin{lstlisting}
+# Activation du moteur
+SecRuleEngine On
+
+# Configuration des logs
+SecAuditEngine RelevantOnly
+SecAuditLog /var/log/apache2/modsec_audit.log
+
+# Niveau de détection
+SecDefaultAction "phase:1,log,auditlog,pass"
+SecDefaultAction "phase:2,log,auditlog,pass"
+\end{lstlisting}
+
+Activation du Core Rule Set :
+\begin{lstlisting}[language=bash]
+cd /etc/apache2/mods-enabled/
+sudo ln -s /usr/share/modsecurity-crs/owasp-crs.load
+sudo systemctl reload apache2
+\end{lstlisting}
