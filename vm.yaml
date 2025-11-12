@@ -1,0 +1,39 @@
+---
+- name: "Création VM"
+  hosts: localhost
+  connection: local
+  tasks:
+    - name: "Création des bridges"
+      become: yes
+      command: brctl addbr {{ item }}
+      with_items:
+        - br1
+        - br2
+      notify:
+        - "Activation des bridges"
+
+    - name: "Création machine virtuelle"
+      community.general.lxd_container:
+        name: "{{ item }}"
+        type: "container"
+        ignore_volatile_options: true
+        state: started
+        source:
+          type: image
+          mode: pull
+          server: https://cloud-images.ubuntu.com/releases/
+          protocol: simplestreams
+          alias: "24.04"
+        profiles: ["default"]
+        wait_for_ipv4_addresses: true
+        timeout: 600
+      loop: "{{ groups['managers'] + groups['workers'] }}"
+
+  handlers:
+    - name: "Activation des bridges"
+      become: yes
+      command: ip link set dev {{ item }} up
+      with_items:
+        - br1
+        - br2
+...
