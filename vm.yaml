@@ -10,7 +10,7 @@
         - br1
         - br2
       notify:
-        - "Activation des bridges"
+        - activer bridges
 
     - name: "Création machine virtuelle"
       community.general.lxd_container:
@@ -30,7 +30,7 @@
       loop: "{{ groups['managers'] + groups['workers'] }}"
 
   handlers:
-    - name: "Activation des bridges"
+    - name: activer bridges
       become: yes
       command: ip link set dev {{ item }} up
       with_items:
