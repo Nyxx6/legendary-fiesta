@@ -16,7 +16,6 @@ web2 ansible_host=localhost ansible_port=2202 ansible_connection=local
 
 [serveur_web:vars]
 ansible_python_interpreter=/usr/bin/python3
-ansible_user=vagrant
 EOF
 
 echo ""
@@ -122,90 +121,72 @@ cat > site.yaml << 'EOF'
   become: yes
   
   tasks:
-    - name: 📦 Mettre à jour le cache APT
+    - name: Mettre à jour APT
       apt:
         update_cache: yes
         cache_valid_time: 3600
       when: ansible_os_family == "Debian"
-      tags:
-        - install
-        - update
 
-    - name: 📦 Installer Nginx
+    - name: Installer Nginx
       apt:
         name: nginx
         state: present
       when: ansible_os_family == "Debian"
-      tags:
-        - install
 
-    - name: 📦 Installer les dépendances supplémentaires
+    - name: Installer les dépendances supplémentaires
       apt:
         name:
           - curl
           - net-tools
         state: present
       when: ansible_os_family == "Debian"
-      tags:
-        - install
 
-    - name: 📁 Créer le répertoire du site web
+    - name: Créer le répertoire du site web
       file:
         path: "{{ nginx_document_root }}"
         state: directory
         mode: '0755'
         owner: "{{ nginx_user }}"
         group: "{{ nginx_group }}"
-      tags:
-        - config
-        - directories
 
-    - name: 🌐 Déployer la page d'accueil avec le template
+    - name: Déployer la page d'accueil avec le template
       template:
         src: templates/index.html.j2
         dest: "{{ nginx_document_root }}/index.html"
         mode: '0644'
         owner: "{{ nginx_user }}"
         group: "{{ nginx_group }}"
-      tags:
-        - config
-        - content
 
-    - name: Déployer la configuration Nginx personnalisée
+    - name: Configurer Nginx
       template:
-        src: templates/nginx.conf.j2
-        dest: /etc/nginx/nginx.conf
+        src: templates/nginx-site.conf.j2
+        dest: "/etc/nginx/sites-available/{{ nginx_server_name }}"
         mode: '0644'
-        owner: root
-        group: root
-        validate: 'nginx -t -c %s'
       notify: Redémarrer Nginx
-      tags:
-        - config
-        - nginx-config
-
-    - name: Supprimer le site par défaut de Nginx
+    
+    - name: Activer le site
+      file:
+        src: "/etc/nginx/sites-available/{{ nginx_server_name }}"
+        dest: "/etc/nginx/sites-enabled/{{ nginx_server_name }}"
+        state: link
+      notify: Redémarrer Nginx
+    
+    - name: Désactiver le site par défaut
       file:
         path: /etc/nginx/sites-enabled/default
         state: absent
       notify: Redémarrer Nginx
-      tags:
-        - config
-
-    - name: Vérifier que Nginx est démarré et activé
+    
+    - name: S'assurer que Nginx est démarré
       service:
         name: nginx
         state: started
         enabled: yes
-      tags:
-        - service
 
     - name: Vérifier que Nginx écoute sur le bon port
       wait_for:
         port: "{{ nginx_port }}"
         timeout: 30
-      tags:
-        - verification
 
     - name: Afficher les informations de connexion
       debug:
@@ -216,21 +197,17 @@ cat > site.yaml << 'EOF'
           Document Root: {{ nginx_document_root }}
           User/Group: {{ nginx_user }}/{{ nginx_group }}
           ==========================================
-      tags:
-        - info
 
   handlers:
     - name: Redémarrer Nginx
       service:
         name: nginx
         state: restarted
-      listen: "Redémarrer Nginx"
 
     - name: Recharger Nginx
       service:
         name: nginx
         state: reloaded
-      listen: "Recharger Nginx"
 EOF
 
 echo ""
