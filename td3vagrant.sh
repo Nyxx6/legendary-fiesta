@@ -2,180 +2,304 @@
 
 set -e
 
-PROJECT_DIR="ansible-nginx-project"
+PROJECT_DIR="td3vagrant"
 
-mkdir -p $PROJECT_DIR/{templates,group_vars}
+mkdir -p $PROJECT_DIR/{templates,group_vars,host_vars}
 cd $PROJECT_DIR
 
-# Create Vagrantfile
-cat > Vagrantfile <<'EOF'
-Vagrant.configure("2") do |config|
-  config.vm.box = "ubuntu/focal64"
-  
-  (1..2).each do |i|
-    config.vm.define "web#{i}" do |web|
-      web.vm.hostname = "web#{i}"
-      web.vm.network "private_network", ip: "192.168.56.1#{i}"
-      web.vm.provider "virtualbox" do |vb|
-        vb.memory = "512"
-        vb.cpus = 1
-        vb.name = "ansible-web#{i}"
-      end
-    end
-  end
-end
-EOF
-
-# Create inventory
+echo ""
+echo "Création du fichier d'inventaire (inventory.ini)..."
 cat > inventory.ini <<'EOF'
 [serveur_web]
-web1 ansible_host=192.168.56.11 ansible_user=vagrant ansible_ssh_private_key_file=.vagrant/machines/web1/virtualbox/private_key
-web2 ansible_host=192.168.56.12 ansible_user=vagrant ansible_ssh_private_key_file=.vagrant/machines/web2/virtualbox/private_key
+web1 ansible_host=localhost ansible_port=2201 ansible_connection=local
+web2 ansible_host=localhost ansible_port=2202 ansible_connection=local
 
 [serveur_web:vars]
 ansible_python_interpreter=/usr/bin/python3
-ansible_ssh_common_args='-o StrictHostKeyChecking=no'
+ansible_user=vagrant
 EOF
 
-# Create group_vars
+echo ""
+echo "Création des variables de groupe (group_vars/serveur_web.yml)..."
 cat > group_vars/serveur_web.yaml <<'EOF'
 ---
-nginx_port: 80
-nginx_root: /var/www/html
-nginx_server_name: localhost
 nginx_user: www-data
 nginx_group: www-data
 EOF
 
-# Create Nginx template
+echo ""
+echo "Création des variables pour web1 (host_vars/web1.yml)..."
+cat > host_vars/web1.yml << 'EOF'
+---
+nginx_port: 8081
+nginx_server_name: web1.local
+nginx_document_root: /var/www/web1
+site_title: "Serveur Web1"
+site_description: "Premier serveur web déployé"
+EOF
+
+echo ""
+echo "Création des variables pour web2 (host_vars/web2.yml)..."
+cat > host_vars/web2.yml << 'EOF'
+---
+nginx_port: 8082
+nginx_server_name: web2.local
+nginx_document_root: /var/www/web2
+site_title: "Serveur Web2"
+site_description: "Deuxième serveur web déployé"
+EOF
+
+echo ""
+echo "Création du template Nginx (templates/nginx.conf.j2)..."
 cat > templates/nginx.conf.j2 <<'EOF'
 server {
     listen {{ nginx_port }};
+    listen [::]:{{ nginx_port }};
+    
     server_name {{ nginx_server_name }};
     
-    root {{ nginx_root }};
+    root {{ nginx_document_root }};
     index index.html index.htm;
     
+    # Logs
+    access_log /var/log/nginx/{{ nginx_server_name }}-access.log;
+    error_log /var/log/nginx/{{ nginx_server_name }}-error.log;
+    
+    # Configuration principale
     location / {
         try_files $uri $uri/ =404;
     }
     
-    # Add server identification
-    add_header X-Served-By $hostname;
+    # Gestion des erreurs
+    error_page 404 /404.html;
+    error_page 500 502 503 504 /50x.html;
+    
+    location = /50x.html {
+        root /usr/share/nginx/html;
+    }
 }
 EOF
 
-# Create playbook
-cat > site.yaml <<'EOF'
+echo ""
+echo "Création du template HTML (templates/index.html.j2)..."
+cat > templates/index.html.j2 << 'EOF'
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ site_title }} - {{ nginx_server_name }}</title>
+</head>
+<body>
+    <div class="container">
+        <h1> {{ site_title }}</h1>
+        <div>
+            <h3> Configuration du Serveur</h3>
+            <div>
+                <span>{{ nginx_server_name }}</span>
+            </div>
+            <div>
+                <span>{{ nginx_port }}</span>
+            </div>
+            <div>
+                <span>{{ nginx_document_root }}</span>
+            </div>
+            <div>
+                <span>{{ nginx_user }} - {{ nginx_group }}</span>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+EOF
+
+echo ""
+echo "Création du playbook principal (site.yaml)..."
+cat > site.yaml << 'EOF'
 ---
-- name: Install and configure Nginx web servers
+- name: Installation et configuration de Nginx avec templates et variables
   hosts: serveur_web
   become: yes
   
   tasks:
-    - name: Install Nginx
+    - name: 📦 Mettre à jour le cache APT
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+      tags:
+        - install
+        - update
+
+    - name: 📦 Installer Nginx
       apt:
         name: nginx
         state: present
-        update_cache: yes
-    
-    - name: Create custom index page
-      copy:
-        content: |
-          <!DOCTYPE html>
-          <html>
-          <head><title>{{ inventory_hostname }}</title></head>
-          <body>
-            <h1>Server: {{ inventory_hostname }}</h1>
-            <p>Port: {{ nginx_port }}</p>
-            <p>Root: {{ nginx_root }}</p>
-            <p>Running as: {{ nginx_user }}:{{ nginx_group }}</p>
-          </body>
-          </html>
-        dest: "{{ nginx_root }}/index.html"
+      when: ansible_os_family == "Debian"
+      tags:
+        - install
+
+    - name: 📦 Installer les dépendances supplémentaires
+      apt:
+        name:
+          - curl
+          - net-tools
+        state: present
+      when: ansible_os_family == "Debian"
+      tags:
+        - install
+
+    - name: 📁 Créer le répertoire du site web
+      file:
+        path: "{{ nginx_document_root }}"
+        state: directory
+        mode: '0755'
         owner: "{{ nginx_user }}"
         group: "{{ nginx_group }}"
+      tags:
+        - config
+        - directories
+
+    - name: 🌐 Déployer la page d'accueil avec le template
+      template:
+        src: templates/index.html.j2
+        dest: "{{ nginx_document_root }}/index.html"
         mode: '0644'
-    
-    - name: Deploy custom Nginx configuration
+        owner: "{{ nginx_user }}"
+        group: "{{ nginx_group }}"
+      tags:
+        - config
+        - content
+
+    - name: Déployer la configuration Nginx personnalisée
       template:
         src: templates/nginx.conf.j2
-        dest: /etc/nginx/sites-available/default
+        dest: /etc/nginx/nginx.conf
+        mode: '0644'
         owner: root
         group: root
-        mode: '0644'
-      notify: Restart Nginx
-    
-    - name: Ensure Nginx is started and enabled
-      systemd:
+        validate: 'nginx -t -c %s'
+      notify: Redémarrer Nginx
+      tags:
+        - config
+        - nginx-config
+
+    - name: Supprimer le site par défaut de Nginx
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: Redémarrer Nginx
+      tags:
+        - config
+
+    - name: Vérifier que Nginx est démarré et activé
+      service:
         name: nginx
         state: started
         enabled: yes
-  
+      tags:
+        - service
+
+    - name: Vérifier que Nginx écoute sur le bon port
+      wait_for:
+        port: "{{ nginx_port }}"
+        timeout: 30
+      tags:
+        - verification
+
+    - name: Afficher les informations de connexion
+      debug:
+        msg: |
+          ==========================================
+          Configuration terminée pour {{ nginx_server_name }}
+          URL: http://localhost:{{ nginx_port }}
+          Document Root: {{ nginx_document_root }}
+          User/Group: {{ nginx_user }}/{{ nginx_group }}
+          ==========================================
+      tags:
+        - info
+
   handlers:
-    - name: Restart Nginx
-      systemd:
+    - name: Redémarrer Nginx
+      service:
         name: nginx
         state: restarted
+      listen: "Redémarrer Nginx"
+
+    - name: Recharger Nginx
+      service:
+        name: nginx
+        state: reloaded
+      listen: "Recharger Nginx"
 EOF
 
-# Start VMs
-vagrant up
+echo ""
+echo "Création du fichier ansible.cfg..."
+cat > ansible.cfg << 'EOF'
+[defaults]
+inventory = inventory.ini
+roles_path = ./roles
 
-# Wait for VMs to be ready
-sleep 10
+[privilege_escalation]
+become = True
+EOF
 
-# Test connectivity
-echo -e " Testing Ansible connectivity..."
-if ansible serveur_web -i inventory.ini -m ping; then
-    echo -e "Connectivity successful!\n"
+echo ""
+echo "📝 Création du script de test (test.sh)..."
+cat > test.sh << 'EOF'
+#!/bin/bash
+echo "=========================================="
+echo "Test du déploiement Nginx avec Ansible"
+echo "=========================================="
+echo ""
+echo " Vérification de la syntaxe du playbook..."
+ansible-playbook site.yaml --syntax-check
+if [ $? -eq 0 ]; then
+    echo " Syntaxe correcte"
 else
-    echo -e " Connectivity failed. Check your VMs."
+    echo " Erreur de syntaxe"
     exit 1
 fi
 
-# Run playbook
-echo -e "Running Ansible playbook..."
-ansible-playbook -i inventory.ini site.yaml
+echo ""
+echo " Vérification de l'inventaire..."
+ansible-inventory --list -i inventory.ini
+echo " Inventaire validé"
 
-# Test web servers
+echo ""
+echo " Test de connexion aux hôtes..."
+ansible serveur_web -m ping -i inventory.ini
+if [ $? -eq 0 ]; then
+    echo " Connexion réussie"
+else
+    echo " Échec de connexion"
+    exit 1
+fi
 
-echo -e "Testing web1 (192.168.56.11):"
-curl -s http://192.168.56.11 || echo -e "Failed to reach web1"
+echo ""
+echo " Exécution du playbook..."
+ansible-playbook site.yaml -i inventory.ini
 
-echo -e "\nTesting web2 (192.168.56.12):"
-curl -s http://192.168.56.12 || echo -e "Failed to reach web2"
-# Test handler (config change)
-
-echo -e "Changing nginx port to 8080..."
-cat > group_vars/serveur_web.yaml <<'EOF'
----
-nginx_port: 8080
-nginx_root: /var/www/html
-nginx_server_name: localhost
-nginx_user: www-data
-nginx_group: www-data
+echo ""
+echo " Vérification des serveurs web..."
+RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8081)
+if [ "$RESPONSE" = "200" ]; then
+    echo " Le site répond correctement "
+    echo ""
+    echo " Accédez au siteweb1: http://localhost:8081"
+else
+    echo " Le site répond avec le code: $RESPONSE"
+fi
+echo ""
+RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8082)
+if [ "$RESPONSE" = "200" ]; then
+    echo " Le site répond correctement "
+    echo ""
+    echo " Accédez au siteweb2: http://localhost:8082"
+else
+    echo " Le site répond avec le code: $RESPONSE"
+fi
 EOF
 
-echo -e "Re-running playbook (watch for 'Restart Nginx' handler)..."
-ansible-playbook -i inventory.ini site.yaml
-
-echo -e "\nTesting new port 8080:"
-curl -s http://192.168.56.11:8080 | head -n 5 || echo -e "Failed"
-curl -s http://192.168.56.12:8080 | head -n 5 || echo -e "Failed"
-
-
-echo -e "\nAccess servers:"
-echo -e "  web1: http://192.168.56.11:8080"
-echo -e "  web2: http://192.168.56.12:8080"
-
-echo -e "  SSH to VM: vagrant ssh web1"
-echo -e "  Run playbook: ansible-playbook -i inventory.ini site.yaml"
-echo -e "  Check status: vagrant status"
-
-# Cleanup option
-echo "Press Enter to destroy the environment..."
-read
-vagrant destroy -f
-cd ..
-rm -rf $PROJECT_DIR
+chmod +x test.sh
+./test.sh
