@@ -7,7 +7,6 @@ PROJECT_DIR="td3vagrant"
 mkdir -p $PROJECT_DIR/{templates,group_vars,host_vars}
 cd $PROJECT_DIR
 
-echo ""
 echo "Création du fichier d'inventaire (inventory.ini)..."
 cat > inventory.ini <<'EOF'
 [serveur_web]
@@ -18,15 +17,13 @@ web2 ansible_host=localhost ansible_port=2202 ansible_connection=local
 ansible_python_interpreter=/usr/bin/python3
 EOF
 
-echo ""
 echo "Création des variables de groupe (group_vars/serveur_web.yml)..."
-cat > group_vars/serveur_web.yaml <<'EOF'
+cat > group_vars/serveur_web.yml <<'EOF'
 ---
 nginx_user: www-data
 nginx_group: www-data
 EOF
 
-echo ""
 echo "Création des variables pour web1 (host_vars/web1.yml)..."
 cat > host_vars/web1.yml << 'EOF'
 ---
@@ -37,7 +34,6 @@ site_title: "Serveur Web1"
 site_description: "Premier serveur web déployé"
 EOF
 
-echo ""
 echo "Création des variables pour web2 (host_vars/web2.yml)..."
 cat > host_vars/web2.yml << 'EOF'
 ---
@@ -48,9 +44,8 @@ site_title: "Serveur Web2"
 site_description: "Deuxième serveur web déployé"
 EOF
 
-echo ""
-echo "Création du template Nginx (templates/nginx.conf.j2)..."
-cat > templates/nginx.conf.j2 <<'EOF'
+echo "Création du template Nginx (templates/nginx-site.conf.j2)..."
+cat > templates/nginx-site.conf.j2 <<'EOF'
 server {
     listen {{ nginx_port }};
     listen [::]:{{ nginx_port }};
@@ -79,7 +74,6 @@ server {
 }
 EOF
 
-echo ""
 echo "Création du template HTML (templates/index.html.j2)..."
 cat > templates/index.html.j2 << 'EOF'
 <!DOCTYPE html>
@@ -88,31 +82,29 @@ cat > templates/index.html.j2 << 'EOF'
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ site_title }} - {{ nginx_server_name }}</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 50px; background: #f4f4f4; }
+        .container { background: white; padding: 30px; border-radius: 10px; max-width: 800px; margin: 0 auto; box-shadow: 0 0 20px rgba(0,0,0,0.1); }
+        h1 { color: #333; }
+        .info { background: #e7f3ff; padding: 15px; border-left: 4px solid #2196F3; margin: 10px 0; }
+        .info span { font-weight: bold; color: #2196F3; }
+    </style>
 </head>
 <body>
     <div class="container">
-        <h1> {{ site_title }}</h1>
-        <div>
-            <h3> Configuration du Serveur</h3>
-            <div>
-                <span>{{ nginx_server_name }}</span>
-            </div>
-            <div>
-                <span>{{ nginx_port }}</span>
-            </div>
-            <div>
-                <span>{{ nginx_document_root }}</span>
-            </div>
-            <div>
-                <span>{{ nginx_user }} - {{ nginx_group }}</span>
-            </div>
+        <h1>✅ {{ site_title }}</h1>
+        <p>{{ site_description }}</p>
+        <div class="info">
+            <p><span>Serveur:</span> {{ nginx_server_name }}</p>
+            <p><span>Port:</span> {{ nginx_port }}</p>
+            <p><span>Document Root:</span> {{ nginx_document_root }}</p>
+            <p><span>User/Group:</span> {{ nginx_user }}/{{ nginx_group }}</p>
         </div>
     </div>
 </body>
 </html>
 EOF
 
-echo ""
 echo "Création du playbook principal (site.yaml)..."
 cat > site.yaml << 'EOF'
 ---
@@ -133,14 +125,6 @@ cat > site.yaml << 'EOF'
         state: present
       when: ansible_os_family == "Debian"
 
-    - name: Installer les dépendances supplémentaires
-      apt:
-        name:
-          - curl
-          - net-tools
-        state: present
-      when: ansible_os_family == "Debian"
-
     - name: Créer le répertoire du site web
       file:
         path: "{{ nginx_document_root }}"
@@ -157,7 +141,7 @@ cat > site.yaml << 'EOF'
         owner: "{{ nginx_user }}"
         group: "{{ nginx_group }}"
 
-    - name: Configurer Nginx
+    - name: Configurer le site Nginx
       template:
         src: templates/nginx-site.conf.j2
         dest: "/etc/nginx/sites-available/{{ nginx_server_name }}"
@@ -177,25 +161,33 @@ cat > site.yaml << 'EOF'
         state: absent
       notify: Redémarrer Nginx
     
-    - name: S'assurer que Nginx est démarré
+    - name: S'assurer que Nginx est démarré et activé
       service:
         name: nginx
         state: started
         enabled: yes
 
+    - name: Forcer le redémarrage de Nginx
+      meta: flush_handlers
+
+    - name: Attendre que Nginx soit prêt
+      pause:
+        seconds: 3
+
     - name: Vérifier que Nginx écoute sur le bon port
       wait_for:
         port: "{{ nginx_port }}"
         timeout: 30
+        host: 127.0.0.1
 
     - name: Afficher les informations de connexion
       debug:
         msg: |
           ==========================================
-          Configuration terminée pour {{ nginx_server_name }}
-          URL: http://localhost:{{ nginx_port }}
-          Document Root: {{ nginx_document_root }}
-          User/Group: {{ nginx_user }}/{{ nginx_group }}
+          ✅ Configuration terminée pour {{ nginx_server_name }}
+          🌐 URL: http://localhost:{{ nginx_port }}
+          📁 Document Root: {{ nginx_document_root }}
+          👤 User/Group: {{ nginx_user }}/{{ nginx_group }}
           ==========================================
 
   handlers:
@@ -203,80 +195,121 @@ cat > site.yaml << 'EOF'
       service:
         name: nginx
         state: restarted
-
-    - name: Recharger Nginx
-      service:
-        name: nginx
-        state: reloaded
 EOF
 
-echo ""
 echo "Création du fichier ansible.cfg..."
 cat > ansible.cfg << 'EOF'
 [defaults]
 inventory = inventory.ini
-roles_path = ./roles
+host_key_checking = False
 
 [privilege_escalation]
 become = True
+become_method = sudo
 EOF
 
-echo ""
 echo "Création du script de test (test.sh)..."
 cat > test.sh << 'EOF'
 #!/bin/bash
 echo "=========================================="
-echo "Test du déploiement Nginx avec Ansible"
+echo "🧪 Test du déploiement Nginx"
 echo "=========================================="
+
+# Vérifier la syntaxe
 echo ""
-echo " Vérification de la syntaxe du playbook..."
+echo "1️⃣ Vérification de la syntaxe..."
 ansible-playbook site.yaml --syntax-check
 if [ $? -eq 0 ]; then
-    echo " Syntaxe correcte"
+    echo "✅ Syntaxe correcte"
 else
-    echo " Erreur de syntaxe"
+    echo "❌ Erreur de syntaxe"
     exit 1
 fi
 
+# Test de connexion
 echo ""
-echo " Vérification de l'inventaire..."
-ansible-inventory --list -i inventory.ini
-echo " Inventaire validé"
-
-echo ""
-echo " Test de connexion aux hôtes..."
-ansible serveur_web -m ping -i inventory.ini
+echo "2️⃣ Test de connexion..."
+ansible serveur_web -m ping
 if [ $? -eq 0 ]; then
-    echo " Connexion réussie"
+    echo "✅ Connexion réussie"
 else
-    echo " Échec de connexion"
+    echo "❌ Échec de connexion"
     exit 1
 fi
 
+# Déploiement
 echo ""
-echo " Exécution du playbook..."
-ansible-playbook site.yaml -i inventory.ini
+echo "3️⃣ Déploiement du playbook..."
+ansible-playbook site.yaml
+
+# Attendre un peu
+echo ""
+echo "⏳ Attente de 5 secondes pour que les services démarrent..."
+sleep 5
+
+# Vérifier les ports
+echo ""
+echo "4️⃣ Vérification des ports en écoute..."
+echo "Ports Nginx:"
+sudo netstat -tlnp | grep nginx || sudo ss -tlnp | grep nginx
+
+# Test des sites
+echo ""
+echo "=========================================="
+echo "🌐 Test d'accès aux sites"
+echo "=========================================="
 
 echo ""
-echo " Vérification des serveurs web..."
+echo "Test web1 (port 8081)..."
 RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8081)
 if [ "$RESPONSE" = "200" ]; then
-    echo " Le site répond correctement "
-    echo ""
-    echo " Accédez au siteweb1: http://localhost:8081"
+    echo "✅ Web1 répond correctement (HTTP $RESPONSE)"
+    echo "🌐 Accédez à: http://localhost:8081"
 else
-    echo " Le site répond avec le code: $RESPONSE"
+    echo "❌ Web1 ne répond pas (HTTP $RESPONSE)"
 fi
+
 echo ""
+echo "Test web2 (port 8082)..."
 RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8082)
 if [ "$RESPONSE" = "200" ]; then
-    echo " Le site répond correctement "
-    echo ""
-    echo " Accédez au siteweb2: http://localhost:8082"
+    echo "✅ Web2 répond correctement (HTTP $RESPONSE)"
+    echo "🌐 Accédez à: http://localhost:8082"
 else
-    echo " Le site répond avec le code: $RESPONSE"
+    echo "❌ Web2 ne répond pas (HTTP $RESPONSE)"
 fi
+
+# Vérifier les fichiers de config
+echo ""
+echo "=========================================="
+echo "📋 Vérification des configurations"
+echo "=========================================="
+echo ""
+echo "Sites disponibles:"
+ls -la /etc/nginx/sites-available/
+
+echo ""
+echo "Sites activés:"
+ls -la /etc/nginx/sites-enabled/
+
+echo ""
+echo "Test de la configuration Nginx:"
+sudo nginx -t
+
+echo ""
+echo "=========================================="
+echo "✅ Tests terminés!"
+echo "=========================================="
 EOF
 
 chmod +x test.sh
-./test.sh
+
+echo ""
+echo "=========================================="
+echo "✅ Configuration terminée!"
+echo "=========================================="
+echo ""
+echo "Pour exécuter:"
+echo "  cd $PROJECT_DIR"
+echo "  ./test.sh"
+echo ""
