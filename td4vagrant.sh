@@ -469,7 +469,7 @@ echo " Configuration des métadonnées..."
 cat > roles/nginx/meta/main.yml << 'EOF'
 ---
 galaxy_info:
-  author: Votre Nom
+  author: Ceryne
   description: Rôle pour installer et configurer Nginx
   company: TP5 - EXO4
   
@@ -1085,4 +1085,5 @@ tree -L 3 roles/nginx/ 2>/dev/null || find roles/nginx/ -type f
 
 echo ""
 echo "✨ Exercice prêt à être utilisé!"
+
 echo ""
