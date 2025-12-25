@@ -245,7 +245,7 @@ become = True
 EOF
 
 echo ""
-echo "📝 Création du script de test (test.sh)..."
+echo "Création du script de test (test.sh)..."
 cat > test.sh << 'EOF'
 #!/bin/bash
 echo "=========================================="
