@@ -3,11 +3,14 @@
 # Script de configuration d'environnement multi-conteneurs avec Vagrant
 # Configure une VM client et un conteneur Docker Nginx
 
-set -e 
+set -e
 
-echo "--- Configuration de l'environnement ---"
+echo "==================================="
+echo "Configuration de l'environnement"
+echo "==================================="
 
-PROJECT_DIR="vagrant-td2"
+# Créer le répertoire du projet
+PROJECT_DIR="td2vagrant"
 mkdir -p $PROJECT_DIR
 cd $PROJECT_DIR
 
@@ -17,11 +20,13 @@ cat > html/index.html << 'EOF'
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-    <title>TD 5 Ex2</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TD 5.2 NGINX</title>
 </head>
 <body>
     <div>
-        <p>Page de test</p>
+        <p>Si vous voyez cette page, votre environnement multi-conteneurs est correctement configuré!</p>
         <p><strong>Serveur:</strong> Nginx dans Docker</p>
     </div>
 </body>
@@ -29,6 +34,9 @@ cat > html/index.html << 'EOF'
 EOF
 
 cat > Vagrantfile << 'EOF'
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
 Vagrant.configure("2") do |config|
   config.vm.define "client" do |client|
     client.vm.box = "ubuntu/focal64"
@@ -42,15 +50,17 @@ Vagrant.configure("2") do |config|
       vb.cpus = 1
     end
     
-    client.vm.provision "shell", inline: <<-SHELL   
+    client.vm.provision "shell", inline: <<-SHELL
+      echo "========================================="
+      echo "Configuration du client web"
+      echo "========================================="
+      
       apt-get update
       apt-get install -y curl wget net-tools
       
       echo "192.168.56.11 nginx-server" >> /etc/hosts
       
       echo "Client configuré avec succès"
-      echo "Utilisez: curl http://192.168.56.11"
-      echo "Ou: curl http://nginx-server"
     SHELL
   end
   
@@ -69,6 +79,10 @@ Vagrant.configure("2") do |config|
     end
     
     docker.vm.provision "shell", inline: <<-SHELL
+      echo "========================================="
+      echo "Installation de Docker"
+      echo "========================================="
+      
       apt-get update
       apt-get install -y apt-transport-https ca-certificates curl software-properties-common
       
@@ -79,7 +93,11 @@ Vagrant.configure("2") do |config|
       apt-get install -y docker-ce docker-ce-cli containerd.io
       
       usermod -aG docker vagrant
-
+      
+      echo "========================================="
+      echo "Démarrage du conteneur Nginx"
+      echo "========================================="
+      
       docker stop nginx-web 2>/dev/null || true
       docker rm nginx-web 2>/dev/null || true
       
@@ -91,7 +109,7 @@ Vagrant.configure("2") do |config|
         nginx:alpine
       
       echo "Docker et Nginx configurés avec succès"
-      echo "Le serveur Nginx accessible sur http://192.168.56.11"
+      echo "Le serveur Nginx est accessible sur http://192.168.56.11"
       
       sleep 3
       docker ps
@@ -104,18 +122,20 @@ EOF
 cat > test.sh << 'EOF'
 #!/bin/bash
 
-echo "--- Test de l'environnement ---"
+echo "========================================="
+echo "Test de l'environnement"
+echo "========================================="
 
 echo ""
-echo "1. Test de connectivité : vagrant ssh client -c 'ping -c 2 192.168.56.11' ..."
+echo "1. Test de connectivité réseau vagrant ssh client -c ping -c 2 192.168.56.11 ..."
 vagrant ssh client -c "ping -c 2 192.168.56.11" || echo "Erreur de connectivité"
 
 echo ""
-echo "2. Test du serveur Nginx : vagrant ssh client -c 'curl -s http://192.168.56.11' ..."
+echo "2. Test du serveur Nginx avec curl vagrant ssh client -c curl -s http://192.168.56.11..."
 vagrant ssh client -c "curl -s http://192.168.56.11" || echo "Le serveur ne répond pas"
 
 echo ""
-echo "3. Vérification du conteneur Docker : vagrant ssh docker-host -c 'docker ps | grep nginx-web' ..."
+echo "3. Vérification du conteneur Docker vagrant ssh docker-host -c docker ps | grep nginx-web..."
 vagrant ssh docker-host -c "docker ps | grep nginx-web"
 
 echo ""
@@ -126,70 +146,12 @@ EOF
 
 chmod +x test.sh
 
-# Créer un README
-cat > README.md << 'EOF'
-# Environnement Multi-Conteneurs avec Vagrant
-
-## Architecture
-
-- **VM Client** (192.168.56.10) : Client web avec curl
-- **VM Docker Host** (192.168.56.11) : Héberge le conteneur Docker Nginx
-- **Réseau Privé** : 192.168.56.0/24
-
-## Installation et Démarrage
-
-```bash
-# Démarrer l'environnement
-vagrant up
-
-# Vérifier le statut
-vagrant status
-
-# Tester la connectivité
-./test.sh
-```
-
-## Commandes Utiles
-
-```bash
-# Se connecter au client
-vagrant ssh client
-
-# Depuis le client, tester le serveur Nginx
-curl http://192.168.56.11
-curl http://nginx-server
-
-# Se connecter à l'hôte Docker
-vagrant ssh docker-host
-
-# Voir les conteneurs Docker
-vagrant ssh docker-host -c "docker ps"
-
-# Modifier la page web
-# Éditez ./html/index.html puis rechargez la page
-```
-
-## Arrêt et Nettoyage
-
-```bash
-# Arrêter les VMs
-vagrant halt
-
-# Détruire l'environnement
-vagrant destroy -f
-```
-EOF
-
 echo ""
-echo "--- Configuration terminée! ---"
 echo "--- Starting Vagrant machines ---"
 vagrant destroy -f
 vagrant up
-echo "--- Tester la configuration ---"
 ./test.sh
-
-echo "--- Tester depuis le client ---"
-vagrant ssh client -c "curl http://192.168.56.11"
+echo ""
 echo "========================================="
 echo "Press Enter to destroy the environment..."
 read
