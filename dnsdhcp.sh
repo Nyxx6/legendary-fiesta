@@ -15,7 +15,8 @@ CLIENT2=client2
 
 cleanup() {
   lxc delete -f $ROUTER $DNS_MASTER $DNS_SLAVE $DHCP_SERVER $DHCP_RELAY $CLIENT1 $CLIENT2 2>/dev/null || true
-  lxc network delete br-sub-a br-sub-b 2>/dev/null || true
+  lxc network delete br-sub-b 2>/dev/null || true
+  lxc network delete br-sub-a 2>/dev/null || true
   rm -rf $ANSIBLE_DIR
 }
 trap cleanup EXIT
@@ -31,19 +32,19 @@ done
 # Inventory
 #################################
 cat > $ANSIBLE_DIR/inventory/hosts.ini <<EOF
-[router]
+[routers]
 router ansible_connection=lxd
 
-[dns_master]
+[dns_masters]
 dns-master ansible_connection=lxd
 
-[dns_slave]
+[dns_slaves]
 dns-slave ansible_connection=lxd
 
-[dhcp_server]
+[dhcp_servers]
 dhcp-server ansible_connection=lxd
 
-[dhcp_relay]
+[dhcp_relays]
 dhcp-relay ansible_connection=lxd
 
 [clients]
@@ -193,26 +194,32 @@ EOF
 # Playbook
 #################################
 cat > $ANSIBLE_DIR/playbooks/site.yml <<EOF
-- hosts: router
-  roles: [router]
+- hosts: routers
+  roles:
+    - router
 
-- hosts: dns_master
-  roles: [dns_master]
+- hosts: dns_masters
+  roles:
+    - dns_master
 
-- hosts: dns_slave
-  roles: [dns_slave]
+- hosts: dns_slaves
+  roles:
+    - dns_slave
 
-- hosts: dhcp_server
-  roles: [dhcp_server]
+- hosts: dhcp_servers
+  roles:
+    - dhcp_server
 
-- hosts: dhcp_relay
-  roles: [dhcp_relay]
+- hosts: dhcp_relays
+  roles:
+    - dhcp_relay
 EOF
 
 #################################
 # Run Ansible
 #################################
-ansible-playbook -i $ANSIBLE_DIR/inventory/hosts.ini $ANSIBLE_DIR/playbooks/site.yml
+cd $ANSIBLE_DIR
+ansible-playbook -i inventory/hosts.ini playbooks/site.yml
 
 #################################
 # Phase 3: Tests
