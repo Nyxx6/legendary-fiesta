@@ -1,69 +1,81 @@
 #!/bin/bash
 set -e
 
-PROJECT_DIR="tp_reseau_final"
-mkdir -p $PROJECT_DIR/roles/{common,router,dns_master,dns_slave,dhcp_server,dhcp_relay,client}/templates
-mkdir -p $PROJECT_DIR/roles/{dns_master,dns_slave,dhcp_server,dhcp_relay}/handlers
+# =========================================================================
+# TP RÉSEAU COMPLET : DNS, DHCP, RELAIS, ROUTEUR (LXD + ANSIBLE)
+# =========================================================================
+
+PROJECT_DIR="lab_reseau_complet"
+ROLES=("common" "router" "dns_master" "dhcp_server" "dhcp_relay")
+
+echo "--- 1. NETTOYAGE ET PRÉPARATION DES RÉPERTOIRES ---"
+# Suppression de l'ancien projet pour éviter les conflits
+rm -rf $PROJECT_DIR
+
+# Création de TOUTE la structure des dossiers Ansible pour éviter les erreurs "not found"
+for role in "${ROLES[@]}"; do
+    mkdir -p "$PROJECT_DIR/roles/$role/tasks"
+    mkdir -p "$PROJECT_DIR/roles/$role/templates"
+    mkdir -p "$PROJECT_DIR/roles/$role/handlers"
+done
+
+# -------------------------------------------------------------------------
+# 2. INFRASTRUCTURE LXD (Inspiré de Netplan/Bridges)
+# -------------------------------------------------------------------------
+echo "--- 2. CONFIGURATION DE L'INFRASTRUCTURE LXD ---"
+# Création des bridges isolés (br01=Sub-A, br02=Sub-B)
+lxc network create br01 ipv4.address=none ipv6.address=none ipv4.dhcp=false || true
+lxc network create br02 ipv4.address=none ipv6.address=none ipv4.dhcp=false || true
+
+# Lancement des conteneurs
+declare -A nodes=( 
+    ["router"]="br01" ["dns-master"]="br01" ["dhcp-server"]="br01" 
+    ["dhcp-relay"]="br02" ["client-b"]="br02" 
+)
+
+for node in "${!nodes[@]}"; do
+    lxc delete -f "$node" >/dev/null 2>&1 || true
+    lxc launch ubuntu:22.04 "$node" --network "${nodes[$node]}"
+done
+
+# Configuration multi-interfaces du Routeur (eth1=Sub-A, eth2=Sub-B)
+lxc network attach br02 router eth1
+lxc config set dhcp-relay security.privileged=true 
+
+echo "Attente du boot (15s)..."
+sleep 15
+
+# -------------------------------------------------------------------------
+# 3. CRÉATION DES FICHIERS ANSIBLE
+# -------------------------------------------------------------------------
 cd $PROJECT_DIR
 
-# 1. INVENTAIRE
 cat <<EOF > hosts.ini
 [routers]
 router ansible_connection=lxd
 [dns_master]
 dns-master ansible_connection=lxd
-[dns_slave]
-dns-slave ansible_connection=lxd
 [dhcp_server]
 dhcp-server ansible_connection=lxd
 [dhcp_relay]
 dhcp-relay ansible_connection=lxd
-[clients]
-client-b ansible_connection=lxd
 EOF
 
-# 2. INFRASTRUCTURE LXD (Inspiré de votre play.txt)
-echo "--- Création des réseaux et conteneurs ---"
-lxc network create br01 ipv4.address=none ipv6.address=none ipv4.dhcp=false || true
-lxc network create br02 ipv4.address=none ipv6.address=none ipv4.dhcp=false || true
-
-# Lancement des instances
-declare -A nodes=( ["router"]="br01" ["dns-master"]="br01" ["dns-slave"]="br01" ["dhcp-server"]="br01" ["dhcp-relay"]="br02" ["client-b"]="br02" )
-for node in "${!nodes[@]}"; do
-    lxc delete -f $node 2>/dev/null || true
-    lxc launch ubuntu:22.04 $node --network ${nodes[$node]}
-done
-
-# Interfaces secondaires (Gateway)
-lxc network attach br02 router eth1
-lxc config set dhcp-relay security.privileged=true
-
-echo "Booting (10s)..." ; sleep 10
-
-# -------------------------------------------------------------------------
-# 3. RÔLES ANSIBLE (Templates Netplan & Services)
-# -------------------------------------------------------------------------
-
-# --- TEMPLATE NETPLAN GÉNÉRIQUE (Utilisé par les rôles) ---
+# --- TEMPLATE NETPLAN (Commun) ---
 cat <<EOF > roles/common/templates/netplan_static.yaml.j2
 network:
   version: 2
   ethernets:
     eth0:
       addresses: [{{ lab_ip }}/24]
-      routes:
-        - to: default
-          via: {{ gateway_ip }}
       nameservers:
-        addresses: [8.8.8.8, 1.1.1.1]
+        addresses: [8.8.8.8]
 EOF
 
-# --- ROLE: ROUTER (NAT & Forwarding) ---
+# --- ROLE: ROUTER ---
 cat <<EOF > roles/router/tasks/main.yml
 ---
-- name: Installer Iptables
-  apt: name=iptables-persistent state=present update_cache=yes
-- name: Configuration IP Routeur (Netplan)
+- name: Configurer Interfaces Routeur
   copy:
     dest: /etc/netplan/60-router.yaml
     content: |
@@ -75,43 +87,33 @@ cat <<EOF > roles/router/tasks/main.yml
   notify: apply netplan
 - name: Enable IP Forwarding
   sysctl: name=net.ipv4.ip_forward value=1 state=present
-- name: NAT Masquerade
-  iptables: table=nat chain=POSTROUTING out_interface=eth0 jump=MASQUERADE
 EOF
 
 # --- ROLE: DNS MASTER ---
 cat <<EOF > roles/dns_master/tasks/main.yml
 ---
-- name: Config Réseau
+- name: Config IP DNS
   template: src=../../common/templates/netplan_static.yaml.j2 dest=/etc/netplan/60-static.yaml
-  vars: { lab_ip: "192.168.10.10", gateway_ip: "192.168.10.1" }
+  vars: { lab_ip: "192.168.10.10" }
   notify: apply netplan
 - name: Install Bind9
   apt: name=bind9 state=present update_cache=yes
-- name: Zone Config
+- name: Config Zone Master
   copy:
     dest: /etc/bind/named.conf.local
     content: |
-      zone "tp.local" { type master; file "/etc/bind/db.tp.local"; allow-transfer { 192.168.10.11; }; };
-- name: Zone File
-  copy:
-    dest: /etc/bind/db.tp.local
-    content: |
-      \$TTL 604800
-      @ IN SOA ns1.tp.local. root.tp.local. (1 604800 86400 2419200 604800)
-      @ IN NS ns1.tp.local.
-      ns1 IN A 192.168.10.10
+      zone "lab.local" { type master; file "/etc/bind/db.lab"; allow-transfer { any; }; };
   notify: restart bind
 EOF
 
 # --- ROLE: DHCP SERVER ---
 cat <<EOF > roles/dhcp_server/tasks/main.yml
 ---
-- name: Config Réseau
+- name: Config IP DHCP
   template: src=../../common/templates/netplan_static.yaml.j2 dest=/etc/netplan/60-static.yaml
-  vars: { lab_ip: "192.168.10.12", gateway_ip: "192.168.10.1" }
+  vars: { lab_ip: "192.168.10.12" }
   notify: apply netplan
-- name: Route vers Subnet B via Routeur
+- name: Route vers Subnet B
   shell: ip route add 192.168.20.0/24 via 192.168.10.1 || true
 - name: Install DHCP Server
   apt: name=isc-dhcp-server state=present update_cache=yes
@@ -119,43 +121,38 @@ cat <<EOF > roles/dhcp_server/tasks/main.yml
   copy:
     dest: /etc/dhcp/dhcpd.conf
     content: |
-      option domain-name-servers 192.168.10.10;
-      subnet 192.168.10.0 netmask 255.255.255.0 { range 192.168.10.50 192.168.10.100; option routers 192.168.10.1; }
-      subnet 192.168.20.0 netmask 255.255.255.0 { range 192.168.20.50 192.168.20.100; option routers 192.168.20.1; }
+      subnet 192.168.10.0 netmask 255.255.255.0 { range 192.168.10.50 192.168.10.60; option routers 192.168.10.1; }
+      subnet 192.168.20.0 netmask 255.255.255.0 { range 192.168.20.50 192.168.20.60; option routers 192.168.20.1; }
   notify: restart dhcp
 EOF
 
 # --- ROLE: DHCP RELAY ---
 cat <<EOF > roles/dhcp_relay/tasks/main.yml
 ---
-- name: Config Réseau
+- name: Config IP Relay
   template: src=../../common/templates/netplan_static.yaml.j2 dest=/etc/netplan/60-static.yaml
-  vars: { lab_ip: "192.168.20.2", gateway_ip: "192.168.20.1" }
+  vars: { lab_ip: "192.168.20.2" }
   notify: apply netplan
 - name: Install Relay
   apt: name=isc-dhcp-relay state=present
-- name: Run Relay
+- name: Lancer Relay (Ecoute eth0, Serveur 192.168.10.12)
   shell: killall dhcrelay || true; dhcrelay -id eth0 192.168.10.12
 EOF
 
-# --- HANDLERS (Communs) ---
-for r in router dns_master dhcp_server dhcp_relay; do
+# --- HANDLERS (Communs pour chaque rôle) ---
+for r in "${ROLES[@]}"; do
 cat <<EOF > roles/$r/handlers/main.yml
 ---
 - name: apply netplan
-  shell: netplan apply
+  command: netplan apply
 - name: restart bind
   service: name=bind9 state=restarted
 - name: restart dhcp
   service: name=isc-dhcp-server state=restarted
-- name: restart nginx
-  service: name=nginx state=restarted
 EOF
 done
 
-# -------------------------------------------------------------------------
-# 4. PLAYBOOK PRINCIPAL
-# -------------------------------------------------------------------------
+# --- PLAYBOOK PRINCIPAL ---
 cat <<EOF > site.yml
 ---
 - hosts: routers
@@ -168,10 +165,16 @@ cat <<EOF > site.yml
   roles: [dhcp_relay]
 EOF
 
-echo "--- Lancement Ansible ---"
+# -------------------------------------------------------------------------
+# 4. EXÉCUTION ET TEST
+# -------------------------------------------------------------------------
+echo "--- 4. EXÉCUTION DU PLAYBOOK ---"
 ansible-playbook -i hosts.ini site.yml
 
-echo "--- Test DHCP Client B ---"
+echo ""
+echo "--- 5. TEST FINAL CLIENT B ---"
+# On force le client B à demander une IP sur eth0 (qui est branché sur br02)
 lxc exec client-b -- dhclient -v eth0
-echo "IP obtenue par le client :"
-lxc exec client-b -- ip addr show eth0 | grep "inet "
+echo ""
+echo "Résultat de l'adresse IP obtenue par le Client B :"
+lxc exec client-b -- ip addr show eth0 | grep "inet 192.168.20"
