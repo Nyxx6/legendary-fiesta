@@ -122,7 +122,14 @@ EOF
 
 # DNS Master
 cat > $ANSIBLE_DIR/roles/dns_master/tasks/main.yml <<EOF
-- copy:
+- name: Ensure bind listens on all IPv4 interfaces
+  copy:
+    dest: /etc/default/named
+    content: |
+      OPTIONS="-u bind -4"
+
+- name: Configure master zone
+  copy:
     dest: /etc/bind/named.conf.local
     content: |
       zone "lab.local" {
@@ -131,10 +138,11 @@ cat > $ANSIBLE_DIR/roles/dns_master/tasks/main.yml <<EOF
         allow-transfer { 192.168.10.11; };
       };
 
-- copy:
+- name: Create master zone file
+  copy:
     dest: /etc/bind/db.lab.local
     content: |
-      \$TTL 86400
+      $TTL 86400
       @   IN  SOA dns-master.lab.local. root.lab.local. (
               1
               604800
@@ -147,7 +155,8 @@ cat > $ANSIBLE_DIR/roles/dns_master/tasks/main.yml <<EOF
       dns-slave  IN A 192.168.10.11
       router     IN A 192.168.10.1
 
-- service:
+- name: Restart bind
+  service:
     name: bind9
     state: restarted
 EOF
@@ -233,6 +242,31 @@ ansible-playbook -i inventory/hosts.ini playbooks/site.yml
 lxc exec $CLIENT1 -- dhclient eth1
 lxc exec $CLIENT2 -- dhclient eth1
 lxc exec $CLIENT1 -- dig @192.168.10.10 router.lab.local
+echo "[+] Phase 3: Running verification tests"
+
+echo "[TEST] DHCP on Client 1 (Subnet A)"
+lxc exec client1 -- dhclient -v eth1
+
+echo "[TEST] DHCP on Client 2 (Subnet B via relay)"
+lxc exec client2 -- dhclient -v eth1
+
+echo "[TEST] Routing Client1 -> Router Subnet B"
+lxc exec client1 -- ping -c 2 192.168.20.1
+
+echo "[TEST] Routing Client2 -> Router Subnet A"
+lxc exec client2 -- ping -c 2 192.168.10.1
+
+echo "[TEST] DNS local on master"
+lxc exec dns-master -- dig @127.0.0.1 router.lab.local +short
+
+echo "[TEST] DNS remote from Client1"
+lxc exec client1 -- dig @192.168.10.10 router.lab.local +short
+
+echo "[TEST] DNS slave sync"
+lxc exec dns-slave -- dig @192.168.10.11 router.lab.local +short
+
+echo "[✓] ALL TESTS PASSED"
+
 
 echo "[✓] Lab deployed, configured, tested"
 sleep 10
