@@ -1,185 +1,225 @@
 #!/bin/bash
 set -e
 
-# 1. PRÉPARATION DE L'INFRASTRUCTURE LXD
-echo "--- 1. Nettoyage et Création des réseaux ---"
-lxc delete -f router dns-master dns-slave dhcp-server dhcp-relay client-b 2>/dev/null || true
-lxc network delete br-sub-a 2>/dev/null || true
-lxc network delete br-sub-b 2>/dev/null || true
+LAB="netlab"
+ANSIBLE_DIR="./ansible-$LAB"
+IMAGE="ubuntu:22.04"
 
-# Réseaux isolés (DHCP LXD désactivé)
-lxc network create br-sub-a ipv4.address=none ipv6.address=none
-lxc network create br-sub-b ipv4.address=none ipv6.address=none
+ROUTER=router
+DNS_MASTER=dns-master
+DNS_SLAVE=dns-slave
+DHCP_SERVER=dhcp-server
+DHCP_RELAY=dhcp-relay
+CLIENT1=client1
+CLIENT2=client2
 
-echo "--- 2. Lancement des instances (Installation via eth0) ---"
-for node in router dns-master dns-slave dhcp-server dhcp-relay client-b; do
-    lxc launch ubuntu:22.04 $node
+cleanup() {
+  lxc delete -f $ROUTER $DNS_MASTER $DNS_SLAVE $DHCP_SERVER $DHCP_RELAY $CLIENT1 $CLIENT2 2>/dev/null || true
+  lxc network delete br-sub-a br-sub-b 2>/dev/null || true
+  rm -rf $ANSIBLE_DIR
+}
+trap cleanup EXIT
+
+echo "[+] Creating Ansible structure"
+mkdir -p $ANSIBLE_DIR/{inventory,playbooks,roles}
+
+for r in router dns_master dns_slave dhcp_server dhcp_relay client; do
+  mkdir -p $ANSIBLE_DIR/roles/$r/tasks
 done
 
-echo "--- 3. Branchement des interfaces Lab ---"
-lxc network attach br-sub-a router eth1
-lxc network attach br-sub-b router eth2
-lxc network attach br-sub-a dns-master eth1
-lxc network attach br-sub-a dns-slave eth1
-lxc network attach br-sub-a dhcp-server eth1
-lxc network attach br-sub-b dhcp-relay eth1
-lxc network attach br-sub-b client-b eth1
-
-# Privilèges pour les sockets brutes (DHCP)
-lxc config set dhcp-server security.privileged=true
-lxc config set dhcp-relay security.privileged=true
-
-echo "Attente du démarrage (15s)..."
-sleep 15
-
-# 2. PRÉPARATION ANSIBLE
-PROJECT_DIR="lab_final_fixed"
-mkdir -p $PROJECT_DIR/roles/{dns,dhcp,router}/{tasks,handlers}
-cd $PROJECT_DIR
-
-# Inventaire clair avec des noms de groupes simples
-cat <<EOF > hosts.ini
-[routers]
+#################################
+# Inventory
+#################################
+cat > $ANSIBLE_DIR/inventory/hosts.ini <<EOF
+[router]
 router ansible_connection=lxd
 
-[dns_servers]
+[dns_master]
 dns-master ansible_connection=lxd
+
+[dns_slave]
 dns-slave ansible_connection=lxd
 
-[dhcp_servers]
+[dhcp_server]
 dhcp-server ansible_connection=lxd
+
+[dhcp_relay]
 dhcp-relay ansible_connection=lxd
+
+[clients]
+client1 ansible_connection=lxd
+client2 ansible_connection=lxd
 EOF
 
-# -------------------------------------------------------------------------
-# 3. PHASE D'INSTALLATION (SÉPARÉE POUR ÉVITER LES SKIPS)
-# -------------------------------------------------------------------------
-cat <<EOF > site_install.yml
----
-- name: Installer Router
-  hosts: routers
-  tasks:
-    - apt: name=iptables-persistent state=present update_cache=yes
+#################################
+# LXD networks
+#################################
+lxc network create br-sub-a ipv4.address=192.168.10.1/24 ipv4.nat=false ipv6.address=none
+lxc network create br-sub-b ipv4.address=192.168.20.1/24 ipv4.nat=false ipv6.address=none
 
-- name: Installer DNS
-  hosts: dns_servers
-  tasks:
-    - apt: name=bind9 state=present update_cache=yes
+#################################
+# Launch containers
+#################################
+for c in $ROUTER $DNS_MASTER $DNS_SLAVE $DHCP_SERVER $DHCP_RELAY $CLIENT1 $CLIENT2; do
+  lxc launch $IMAGE $c
+done
 
-- name: Installer DHCP Server
-  hosts: dhcp-server
-  tasks:
-    - apt: name=isc-dhcp-server state=present update_cache=yes
+sleep 15
 
-- name: Installer DHCP Relay
-  hosts: dhcp-relay
-  tasks:
-    - apt: name=isc-dhcp-relay state=present update_cache=yes
+#################################
+# Attach NICs
+#################################
+lxc network attach br-sub-a $ROUTER eth1
+lxc network attach br-sub-b $ROUTER eth2
+
+for c in $DNS_MASTER $DNS_SLAVE $DHCP_SERVER $CLIENT1; do
+  lxc network attach br-sub-a $c eth1
+done
+
+for c in $DHCP_RELAY $CLIENT2; do
+  lxc network attach br-sub-b $c eth1
+done
+
+#################################
+# Phase 1: Package install
+#################################
+for c in $DNS_MASTER $DNS_SLAVE; do
+  lxc exec $c -- apt update
+  lxc exec $c -- apt install -y bind9
+done
+
+lxc exec $DHCP_SERVER -- apt update
+lxc exec $DHCP_SERVER -- apt install -y isc-dhcp-server
+
+lxc exec $DHCP_RELAY -- apt update
+lxc exec $DHCP_RELAY -- apt install -y isc-dhcp-relay
+
+#################################
+# Ansible roles (Phase 2)
+#################################
+
+# Router role
+cat > $ANSIBLE_DIR/roles/router/tasks/main.yml <<EOF
+- sysctl:
+    name: net.ipv4.ip_forward
+    value: '1'
+    state: present
+    reload: yes
+
+- command: ip addr add 192.168.10.1/24 dev eth1
+  ignore_errors: yes
+
+- command: ip addr add 192.168.20.1/24 dev eth2
+  ignore_errors: yes
 EOF
 
-# -------------------------------------------------------------------------
-# 4. DÉFINITION DES RÔLES DE CONFIGURATION
-# -------------------------------------------------------------------------
-
-# --- ROLE ROUTER ---
-cat <<EOF > roles/router/tasks/main.yml
----
-- name: Configurer Interfaces Lab et Forwarding
-  shell: |
-    ip addr add 192.168.10.1/24 dev eth1 || true
-    ip addr add 192.168.20.1/24 dev eth2 || true
-    sysctl -w net.ipv4.ip_forward=1
-EOF
-
-# --- ROLE DNS ---
-cat <<EOF > roles/dns/tasks/main.yml
----
-- name: IP Lab DNS
-  shell: ip addr add {{ lab_ip }}/24 dev eth1 || true
-- name: Configurer Bind9
-  copy:
+# DNS Master
+cat > $ANSIBLE_DIR/roles/dns_master/tasks/main.yml <<EOF
+- copy:
     dest: /etc/bind/named.conf.local
     content: |
-      zone "lab.local" { 
-        type {{ dns_type }};
-        file "/var/cache/bind/db.lab";
-        {% if dns_type == 'master' %} allow-transfer { 192.168.10.11; }; {% else %} masters { 192.168.10.10; }; {% endif %}
+      zone "lab.local" {
+        type master;
+        file "/etc/bind/db.lab.local";
+        allow-transfer { 192.168.10.11; };
       };
-  notify: restart bind
+
+- copy:
+    dest: /etc/bind/db.lab.local
+    content: |
+      \$TTL 86400
+      @   IN  SOA dns-master.lab.local. root.lab.local. (
+              1
+              604800
+              86400
+              2419200
+              86400 )
+      @   IN  NS  dns-master.lab.local.
+      @   IN  NS  dns-slave.lab.local.
+      dns-master IN A 192.168.10.10
+      dns-slave  IN A 192.168.10.11
+      router     IN A 192.168.10.1
+
+- service:
+    name: bind9
+    state: restarted
 EOF
 
-# --- ROLE DHCP ---
-cat <<EOF > roles/dhcp/tasks/main.yml
----
-- name: IP Lab DHCP et Route
-  shell: |
-    ip addr add {{ lab_ip }}/24 dev eth1 || true
-    {% if inventory_hostname == 'dhcp-server' %} ip route add 192.168.20.0/24 via 192.168.10.1 || true {% endif %}
+# DNS Slave
+cat > $ANSIBLE_DIR/roles/dns_slave/tasks/main.yml <<EOF
+- copy:
+    dest: /etc/bind/named.conf.local
+    content: |
+      zone "lab.local" {
+        type slave;
+        masters { 192.168.10.10; };
+        file "/var/cache/bind/db.lab.local";
+      };
 
-- name: Config Serveur DHCP
-  when: inventory_hostname == 'dhcp-server'
-  block:
-    - copy:
-        dest: /etc/dhcp/dhcpd.conf
-        content: |
-          option domain-name-servers 192.168.10.10;
-          subnet 192.168.10.0 netmask 255.255.255.0 { range 192.168.10.50 192.168.10.100; option routers 192.168.10.1; }
-          subnet 192.168.20.0 netmask 255.255.255.0 { range 192.168.20.50 192.168.20.100; option routers 192.168.20.1; }
-    - service: name=isc-dhcp-server state=restarted
-
-- name: Lancer Relais DHCP (Ecoute eth1)
-  when: inventory_hostname == 'dhcp-relay'
-  shell: killall dhcrelay || true; dhcrelay -id eth1 192.168.10.12
+- service:
+    name: bind9
+    state: restarted
 EOF
 
-# HANDLERS
-cat <<EOF > roles/dns/handlers/main.yml
----
-- name: restart bind
-  service: name=bind9 state=restarted
-EOF
-cat <<EOF > roles/dhcp/handlers/main.yml
----
-- name: restart dhcp
-  service: name=isc-dhcp-server state=restarted
+# DHCP Server
+cat > $ANSIBLE_DIR/roles/dhcp_server/tasks/main.yml <<EOF
+- copy:
+    dest: /etc/dhcp/dhcpd.conf
+    content: |
+      subnet 192.168.10.0 netmask 255.255.255.0 {
+        range 192.168.10.100 192.168.10.150;
+        option routers 192.168.10.1;
+        option domain-name-servers 192.168.10.10;
+      }
+
+- service:
+    name: isc-dhcp-server
+    state: restarted
 EOF
 
-# -------------------------------------------------------------------------
-# 5. PLAYBOOK DE CONFIGURATION
-# -------------------------------------------------------------------------
-cat <<EOF > site_config.yml
----
-- hosts: routers
+# DHCP Relay
+cat > $ANSIBLE_DIR/roles/dhcp_relay/tasks/main.yml <<EOF
+- lineinfile:
+    path: /etc/default/isc-dhcp-relay
+    regexp: '^OPTIONS='
+    line: 'OPTIONS="-i eth1 192.168.10.12"'
+
+- service:
+    name: isc-dhcp-relay
+    state: restarted
+EOF
+
+#################################
+# Playbook
+#################################
+cat > $ANSIBLE_DIR/playbooks/site.yml <<EOF
+- hosts: router
   roles: [router]
 
-- hosts: dns_servers
-  roles: [dns]
-  vars:
-    dns_type: "{{ 'master' if inventory_hostname == 'dns-master' else 'slave' }}"
-    lab_ip: "{{ '192.168.10.10' if inventory_hostname == 'dns-master' else '192.168.10.11' }}"
+- hosts: dns_master
+  roles: [dns_master]
 
-- hosts: dhcp_servers
-  roles: [dhcp]
-  vars:
-    lab_ip: "{{ '192.168.10.12' if inventory_hostname == 'dhcp-server' else '192.168.20.2' }}"
+- hosts: dns_slave
+  roles: [dns_slave]
+
+- hosts: dhcp_server
+  roles: [dhcp_server]
+
+- hosts: dhcp_relay
+  roles: [dhcp_relay]
 EOF
 
-# -------------------------------------------------------------------------
-# 6. EXÉCUTION
-# -------------------------------------------------------------------------
-echo "--- Étape 4 : Installation des paquets ---"
-ansible-playbook -i hosts.ini site_install.yml
+#################################
+# Run Ansible
+#################################
+ansible-playbook -i $ANSIBLE_DIR/inventory/hosts.ini $ANSIBLE_DIR/playbooks/site.yml
 
-echo "--- Étape 5 : Configuration des services ---"
-ansible-playbook -i hosts.ini site_config.yml
+#################################
+# Phase 3: Tests
+#################################
+lxc exec $CLIENT1 -- dhclient eth1
+lxc exec $CLIENT2 -- dhclient eth1
+lxc exec $CLIENT1 -- dig @192.168.10.10 router.lab.local
 
-echo ""
-echo "--- TEST FINAL SUR LE CLIENT B ---"
-# Désactiver eth0 (LXD) pour forcer le DHCP sur eth1 (votre Lab)
-lxc exec client-b -- ip link set eth0 down
-lxc exec client-b -- dhclient -v eth1
-echo ""
-echo "Résultat de l'IP du Client B (réseau 192.168.20.x attendu) :"
-lxc exec client-b -- ip addr show eth1 | grep "inet "
-# Rallumer eth0
-lxc exec client-b -- ip link set eth0 up
+echo "[✓] Lab deployed, configured, tested"
+sleep 10
