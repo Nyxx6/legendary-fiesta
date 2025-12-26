@@ -98,6 +98,12 @@ lxc exec $DHCP_RELAY -- apt install -y isc-dhcp-relay
 #################################
 # Ansible roles (Phase 2)
 #################################
+cat > $ANSIBLE_DIR/ansible.cfg <<EOF
+[defaults]
+roles_path = ./roles
+inventory = ./inventory/hosts.ini
+host_key_checking = False
+EOF
 
 # Router role
 cat > $ANSIBLE_DIR/roles/router/tasks/main.yml <<EOF
