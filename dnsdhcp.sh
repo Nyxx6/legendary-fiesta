@@ -2,35 +2,28 @@
 set -e
 
 # =========================================================================
-# Lab Réseau Complet : DNS Master/Slave, DHCP Server/Relay & Router
-# Infrastructure : LXD | Orchestration : Ansible
+# Lab Réseau Complet - Version Stable (Fix DNS Resolution for APT)
 # =========================================================================
 
 PROJECT_DIR="ansible_network_lab"
 ROLES=("router" "dns_master" "dns_slave" "dhcp_server" "dhcp_relay")
 
-echo "--- 1. Préparation de la structure Ansible ---"
+echo "--- 1. Structure Ansible ---"
 rm -rf $PROJECT_DIR
 for role in "${ROLES[@]}"; do
     mkdir -p "$PROJECT_DIR/roles/$role/tasks" "$PROJECT_DIR/roles/$role/templates" "$PROJECT_DIR/roles/$role/handlers"
 done
 cd $PROJECT_DIR
 
-# -------------------------------------------------------------------------
-# 2. Configuration LXD (Réseaux avec NAT pour installation packages)
-# -------------------------------------------------------------------------
-echo "--- 2. Configuration des réseaux LXD (NAT activé pour APT) ---"
+echo "--- 2. Réseaux LXD ---"
 lxc network delete br-sub-a >/dev/null 2>&1 || true
 lxc network create br-sub-a ipv4.address=192.168.10.254/24 ipv4.nat=true ipv4.dhcp=false
 
 lxc network delete br-sub-b >/dev/null 2>&1 || true
 lxc network create br-sub-b ipv4.address=192.168.20.254/24 ipv4.nat=true ipv4.dhcp=false
 
-echo "--- 3. Lancement des instances ---"
-declare -A nodes=( 
-    ["router"]="br-sub-a" ["dns-master"]="br-sub-a" ["dns-slave"]="br-sub-a" 
-    ["dhcp-server"]="br-sub-a" ["dhcp-relay"]="br-sub-b" ["client-b"]="br-sub-b"
-)
+echo "--- 3. Instances ---"
+declare -A nodes=( ["router"]="br-sub-a" ["dns-master"]="br-sub-a" ["dns-slave"]="br-sub-a" ["dhcp-server"]="br-sub-a" ["dhcp-relay"]="br-sub-b" ["client-b"]="br-sub-b" )
 
 for node in "${!nodes[@]}"; do
     lxc delete -f "$node" >/dev/null 2>&1 || true
@@ -40,18 +33,10 @@ done
 lxc network attach br-sub-b router eth1
 lxc config set dhcp-relay security.privileged=true 
 
-echo "Attente du démarrage (15s)..."
+echo "Attente démarrage (15s)..."
 sleep 15
 
-# -------------------------------------------------------------------------
-# 3. Fichiers de Configuration Ansible
-# -------------------------------------------------------------------------
-cat <<EOF > ansible.cfg
-[defaults]
-inventory = hosts.ini
-host_key_checking = False
-EOF
-
+# --- Fichiers de base ---
 cat <<EOF > hosts.ini
 [routers]
 router ansible_connection=lxd
@@ -66,8 +51,21 @@ dhcp-relay ansible_connection=lxd
 EOF
 
 # -------------------------------------------------------------------------
-# 4. Définition des Rôles (Tasks, Templates, Handlers)
+# 4. Rôles avec Correctif de Connectivité (IP + GW + DNS Google)
 # -------------------------------------------------------------------------
+
+# Fonctions pour générer les tâches redondantes (Connectivité avant APT)
+gen_connectivity_tasks() {
+    local ip=$1
+    local gw=$2
+    cat <<TASK
+- name: Configurer Connectivité Internet (IP, Gateway, DNS)
+  shell: |
+    ip addr add $ip/24 dev eth0 || true
+    ip route add default via $gw || true
+    echo "nameserver 8.8.8.8" > /etc/resolv.conf
+TASK
+}
 
 # --- ROLE: ROUTER ---
 cat <<EOF > roles/router/tasks/main.yml
@@ -80,30 +78,21 @@ cat <<EOF > roles/router/tasks/main.yml
 EOF
 
 # --- ROLE: DNS MASTER ---
-cat <<EOF > roles/dns_master/tasks/main.yml
----
-- name: Config IP et Route Internet pour APT
-  shell: |
-    ip addr add 192.168.10.10/24 dev eth0 || true
-    ip route add default via 192.168.10.254 || true
-
+{
+gen_connectivity_tasks "192.168.10.10" "192.168.10.254"
+cat <<EOF
 - name: Installer Bind9
   apt: name=bind9 state=present update_cache=yes
-
-- name: Configuration named.conf.local
+- name: Configuration Bind
   template: src=named.conf.local.j2 dest=/etc/bind/named.conf.local
-
-- name: Configuration Fichier de Zone
+- name: Fichier Zone
   template: src=db.lab.local.j2 dest=/var/cache/bind/db.lab.local
   notify: restart bind
 EOF
+} > roles/dns_master/tasks/main.yml
 
 cat <<EOF > roles/dns_master/templates/named.conf.local.j2
-zone "lab.local" {
-    type master;
-    file "/var/cache/bind/db.lab.local";
-    allow-transfer { 192.168.10.11; };
-};
+zone "lab.local" { type master; file "/var/cache/bind/db.lab.local"; allow-transfer { 192.168.10.11; }; };
 EOF
 
 cat <<EOF > roles/dns_master/templates/db.lab.local.j2
@@ -113,61 +102,37 @@ cat <<EOF > roles/dns_master/templates/db.lab.local.j2
 @ IN NS ns2.lab.local.
 ns1 IN A 192.168.10.10
 ns2 IN A 192.168.10.11
-router IN A 192.168.10.1
-EOF
-
-cat <<EOF > roles/dns_master/handlers/main.yml
----
-- name: restart bind
-  service: name=bind9 state=restarted
 EOF
 
 # --- ROLE: DNS SLAVE ---
-cat <<EOF > roles/dns_slave/tasks/main.yml
----
-- name: Config IP et Route Internet
-  shell: |
-    ip addr add 192.168.10.11/24 dev eth0 || true
-    ip route add default via 192.168.10.254 || true
-
+{
+gen_connectivity_tasks "192.168.10.11" "192.168.10.254"
+cat <<EOF
 - name: Installer Bind9
   apt: name=bind9 state=present update_cache=yes
-
-- name: Configuration zone esclave
+- name: Config Slave
   template: src=named.conf.local.j2 dest=/etc/bind/named.conf.local
   notify: restart bind
 EOF
+} > roles/dns_slave/tasks/main.yml
 
 cat <<EOF > roles/dns_slave/templates/named.conf.local.j2
-zone "lab.local" {
-    type slave;
-    file "/var/cache/bind/db.lab.local";
-    masters { 192.168.10.10; };
-};
-EOF
-
-cat <<EOF > roles/dns_slave/handlers/main.yml
----
-- name: restart bind
-  service: name=bind9 state=restarted
+zone "lab.local" { type slave; file "/var/cache/bind/db.lab.local"; masters { 192.168.10.10; }; };
 EOF
 
 # --- ROLE: DHCP SERVER ---
-cat <<EOF > roles/dhcp_server/tasks/main.yml
----
-- name: Config IP et Route vers Subnet B via Router
-  shell: |
-    ip addr add 192.168.10.12/24 dev eth0 || true
-    ip route add 192.168.20.0/24 via 192.168.10.1 || true
-    ip route add default via 192.168.10.254 || true
-
-- name: Installer DHCP Server
+{
+gen_connectivity_tasks "192.168.10.12" "192.168.10.254"
+cat <<EOF
+- name: Route vers Subnet B
+  shell: ip route add 192.168.20.0/24 via 192.168.10.1 || true
+- name: Installer DHCP
   apt: name=isc-dhcp-server state=present update_cache=yes
-
-- name: Configuration dhcpd.conf
+- name: Config DHCP
   template: src=dhcpd.conf.j2 dest=/etc/dhcp/dhcpd.conf
   notify: restart dhcp
 EOF
+} > roles/dhcp_server/tasks/main.yml
 
 cat <<EOF > roles/dhcp_server/templates/dhcpd.conf.j2
 option domain-name "lab.local";
@@ -175,41 +140,36 @@ option domain-name-servers 192.168.10.10, 192.168.10.11;
 default-lease-time 600;
 max-lease-time 7200;
 authoritative;
-
-subnet 192.168.10.0 netmask 255.255.255.0 {
-  range 192.168.10.50 192.168.10.100;
-  option routers 192.168.10.1;
-}
-
-subnet 192.168.20.0 netmask 255.255.255.0 {
-  range 192.168.20.50 192.168.20.100;
-  option routers 192.168.20.1;
-}
+subnet 192.168.10.0 netmask 255.255.255.0 { range 192.168.10.50 192.168.10.100; option routers 192.168.10.1; }
+subnet 192.168.20.0 netmask 255.255.255.0 { range 192.168.20.50 192.168.20.100; option routers 192.168.20.1; }
 EOF
 
+# --- ROLE: DHCP RELAY ---
+{
+gen_connectivity_tasks "192.168.20.2" "192.168.20.254"
+cat <<EOF
+- name: Installer DHCP Relay
+  apt: name=isc-dhcp-relay state=present update_cache=yes
+- name: Lancer Relais
+  shell: dhcrelay -i eth0 192.168.10.12
+EOF
+} > roles/dhcp_relay/tasks/main.yml
+
+# --- Handlers ---
+cat <<EOF > roles/dns_master/handlers/main.yml
+---
+- name: restart bind
+  service: name=bind9 state=restarted
+EOF
+cp roles/dns_master/handlers/main.yml roles/dns_slave/handlers/main.yml
 cat <<EOF > roles/dhcp_server/handlers/main.yml
 ---
 - name: restart dhcp
   service: name=isc-dhcp-server state=restarted
 EOF
 
-# --- ROLE: DHCP RELAY ---
-cat <<EOF > roles/dhcp_relay/tasks/main.yml
----
-- name: Config IP et Route Internet
-  shell: |
-    ip addr add 192.168.20.2/24 dev eth0 || true
-    ip route add default via 192.168.20.254 || true
-
-- name: Installer DHCP Relay
-  apt: name=isc-dhcp-relay state=present update_cache=yes
-
-- name: Lancer le service Relais (Vers serveur .12)
-  shell: dhcrelay -i eth0 192.168.10.12
-EOF
-
 # -------------------------------------------------------------------------
-# 5. Playbook Principal et Exécution
+# 5. Playbook & Run
 # -------------------------------------------------------------------------
 cat <<EOF > site.yml
 ---
@@ -225,15 +185,9 @@ cat <<EOF > site.yml
   roles: [dhcp_relay]
 EOF
 
-echo "--- 4. Lancement du déploiement Ansible ---"
+echo "--- 4. Lancement Ansible ---"
 ansible-playbook -i hosts.ini site.yml
 
-echo "--- 5. Tests de validation ---"
-echo "Demande d'IP pour le Client B sur Subnet B..."
+echo "--- 5. Test Final ---"
 lxc exec client-b -- dhclient -v eth0
-
-echo "Vérification de l'IP obtenue :"
 lxc exec client-b -- ip addr show eth0 | grep "inet 192.168.20"
-
-echo ""
-echo "Déploiement terminé avec succès."
