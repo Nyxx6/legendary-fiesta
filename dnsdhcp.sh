@@ -142,13 +142,13 @@ cat > $ANSIBLE_DIR/roles/dns_master/tasks/main.yml <<EOF
   copy:
     dest: /etc/bind/db.lab.local
     content: |
-      $TTL 86400
+      \$TTL 86400
       @   IN  SOA dns-master.lab.local. root.lab.local. (
-              1
-              604800
-              86400
-              2419200
-              86400 )
+                  1          ; Serial
+                  604800     ; Refresh
+                  86400      ; Retry
+                  2419200    ; Expire
+                  86400 )    ; Negative Cache TTL
       @   IN  NS  dns-master.lab.local.
       @   IN  NS  dns-slave.lab.local.
       dns-master IN A 192.168.10.10
