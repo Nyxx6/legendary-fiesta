@@ -2,7 +2,7 @@
 
 # =========================================================================
 # TD3: Deployment of 2 Nginx Web Servers using LXD & Ansible
-# Target: Linux (VMware/Ubuntu/Debian)
+# Fix: Using official 'ubuntu:' remote for images
 # =========================================================================
 
 set -e
@@ -11,24 +11,28 @@ PROJECT_DIR="td3_lxd_ansible"
 mkdir -p $PROJECT_DIR/{templates,host_vars}
 cd $PROJECT_DIR
 
-echo "--- Step 1: Initializing LXD (if not already done) ---"
-# Check if LXD is installed, if not, you may need: sudo apt install lxd lxd-client -y
-# Ensure the user is in the 'lxd' group
+echo "--- Step 1: Initializing LXD ---"
 if ! lxc query / > /dev/null 2>&1; then
-    echo "Initializing LXD with defaults..."
     sudo lxd init --auto
 fi
 
 echo "--- Step 2: Launching Containers ---"
-# Launch two Ubuntu containers
-lxc launch images:ubuntu/22.04 web1 || echo "web1 already exists"
-lxc launch images:ubuntu/22.04 web2 || echo "web2 already exists"
+# We use 'ubuntu:22.04' (Official Canonical Remote) 
+# instead of 'images:ubuntu/22.04'
+for container in web1 web2; do
+    if lxc info "$container" >/dev/null 2>&1; then
+        echo "Container $container already exists, skipping launch."
+    else
+        echo "Launching $container..."
+        lxc launch ubuntu:22.04 "$container"
+    fi
+done
 
-echo "Waiting for containers to be ready..."
+echo "Waiting for containers to get IPs..."
 sleep 5
 
 # -------------------------------------------------------------------------
-# 3. Create Ansible Inventory (Using LXD Connection)
+# 3. Create Ansible Inventory
 # -------------------------------------------------------------------------
 echo "--- Step 3: Creating Inventory ---"
 cat <<EOF > inventory.ini
@@ -43,7 +47,6 @@ EOF
 # -------------------------------------------------------------------------
 # 4. Create Host Variables
 # -------------------------------------------------------------------------
-echo "--- Step 4: Creating Variables ---"
 cat <<EOF > host_vars/web1.yml
 nginx_port: 8081
 nginx_server_name: web1.local
@@ -59,8 +62,6 @@ EOF
 # -------------------------------------------------------------------------
 # 5. Create Templates
 # -------------------------------------------------------------------------
-echo "--- Step 5: Creating Templates ---"
-# Nginx Config
 cat <<EOF > templates/nginx.conf.j2
 server {
     listen {{ nginx_port }};
@@ -74,62 +75,57 @@ server {
 }
 EOF
 
-# HTML Index
 cat <<EOF > templates/index.html.j2
 <!DOCTYPE html>
 <html>
-<head>
-    <title>{{ site_title }}</title>
-    <style>body { font-family: sans-serif; background: #f0f0f0; text-align: center; }</style>
-</head>
-<body>
+<head><title>{{ site_title }}</title></head>
+<body style="text-align:center; font-family:sans-serif; background:#eee;">
     <h1>{{ site_title }}</h1>
-    <p>Ce serveur est un conteneur <strong>LXD</strong> nommé {{ inventory_hostname }}</p>
-    <p>Configuré via Ansible sur le port {{ nginx_port }}</p>
+    <p>Conteneur: <strong>{{ inventory_hostname }}</strong></p>
+    <p>Port: {{ nginx_port }}</p>
 </body>
 </html>
 EOF
 
 # -------------------------------------------------------------------------
-# 6. Create Ansible Playbook
+# 6. Create Playbook
 # -------------------------------------------------------------------------
-echo "--- Step 6: Creating Playbook ---"
 cat <<EOF > site.yaml
 ---
-- name: Configuration des conteneurs Nginx via LXD
+- name: Configuration Nginx LXD
   hosts: serveur_web
   become: yes
   tasks:
-    - name: Installer Nginx
+    - name: Update and Install Nginx
       apt:
         name: nginx
         update_cache: yes
         state: present
 
-    - name: Créer le répertoire du site
+    - name: Create Web Directory
       file:
         path: "/var/www/{{ inventory_hostname }}"
         state: directory
         mode: '0755'
 
-    - name: Déployer l'index HTML
+    - name: Deploy Index
       template:
         src: templates/index.html.j2
         dest: "/var/www/{{ inventory_hostname }}/index.html"
 
-    - name: Configurer le site Nginx
+    - name: Configure Nginx
       template:
         src: templates/nginx.conf.j2
         dest: "/etc/nginx/sites-available/{{ inventory_hostname }}"
       notify: Reload Nginx
 
-    - name: Activer le site
+    - name: Enable Site
       file:
         src: "/etc/nginx/sites-available/{{ inventory_hostname }}"
         dest: "/etc/nginx/sites-enabled/{{ inventory_hostname }}"
         state: link
 
-    - name: Supprimer le site par défaut
+    - name: Remove Default
       file:
         path: /etc/nginx/sites-enabled/default
         state: absent
@@ -143,23 +139,22 @@ cat <<EOF > site.yaml
 EOF
 
 # -------------------------------------------------------------------------
-# 7. Run Playbook and Test
+# 7. Run and Test
 # -------------------------------------------------------------------------
 echo "--- Step 7: Running Ansible Playbook ---"
 ansible-playbook -i inventory.ini site.yaml
 
 echo "--- Step 8: Testing Connectivity ---"
-# Get IP addresses of containers
-IP_WEB1=$(lxc list web1 -c 4 --format csv | cut -d' ' -f1)
-IP_WEB2=$(lxc list web2 -c 4 --format csv | cut -d' ' -f1)
+IP1=$(lxc list web1 -c 4 --format csv | cut -d' ' -f1)
+IP2=$(lxc list web2 -c 4 --format csv | cut -d' ' -f1)
 
-echo "Testing Web1 ($IP_WEB1:8081)..."
-curl -s http://$IP_WEB1:8081 | grep "Web1" && echo "SUCCESS" || echo "FAILED"
+echo "Testing Web1 at http://$IP1:8081..."
+curl -s http://$IP1:8081 | grep "Web1" && echo "SUCCESS"
 
-echo "Testing Web2 ($IP_WEB2:8082)..."
-curl -s http://$IP_WEB2:8082 | grep "Web2" && echo "SUCCESS" || echo "FAILED"
+echo "Testing Web2 at http://$IP2:8082..."
+curl -s http://$IP2:8082 | grep "Web2" && echo "SUCCESS"
 
 echo ""
-echo "Deployment Complete!"
-echo "URL Web1: http://$IP_WEB1:8081"
-echo "URL Web2: http://$IP_WEB2:8082"
+echo "Done! Access your containers at:"
+echo "Web1: http://$IP1:8081"
+echo "Web2: http://$IP2:8082"
