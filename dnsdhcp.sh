@@ -96,18 +96,64 @@ lxc exec $DHCP_RELAY -- apt update
 lxc exec $DHCP_RELAY -- apt install -y isc-dhcp-relay
 
 #################################
-# Phase 1.5: Configure static IPs
+# Phase 1.5: Configure network with netplan
 #################################
-lxc exec $DNS_MASTER -- ip addr add 192.168.10.10/24 dev eth1
-lxc exec $DNS_SLAVE -- ip addr add 192.168.10.11/24 dev eth1
-lxc exec $DHCP_SERVER -- ip addr add 192.168.10.12/24 dev eth1
-lxc exec $DHCP_RELAY -- ip addr add 192.168.20.2/24 dev eth1
+echo "[+] Configuring network with netplan"
 
-# Set default routes
-lxc exec $DNS_MASTER -- ip route add default via 192.168.10.1
-lxc exec $DNS_SLAVE -- ip route add default via 192.168.10.1
-lxc exec $DHCP_SERVER -- ip route add default via 192.168.10.1
-lxc exec $DHCP_RELAY -- ip route add default via 192.168.20.1
+# DNS Master
+lxc exec $DNS_MASTER -- bash -c "cat > /etc/netplan/10-eth1.yaml <<NETPLAN
+network:
+  version: 2
+  ethernets:
+    eth1:
+      addresses: [192.168.10.10/24]
+      routes:
+        - to: default
+          via: 192.168.10.1
+NETPLAN
+netplan apply"
+
+# DNS Slave
+lxc exec $DNS_SLAVE -- bash -c "cat > /etc/netplan/10-eth1.yaml <<NETPLAN
+network:
+  version: 2
+  ethernets:
+    eth1:
+      addresses: [192.168.10.11/24]
+      routes:
+        - to: default
+          via: 192.168.10.1
+NETPLAN
+netplan apply"
+
+# DHCP Server
+lxc exec $DHCP_SERVER -- bash -c "cat > /etc/netplan/10-eth1.yaml <<NETPLAN
+network:
+  version: 2
+  ethernets:
+    eth1:
+      addresses: [192.168.10.12/24]
+      routes:
+        - to: default
+          via: 192.168.10.1
+NETPLAN
+netplan apply"
+
+# DHCP Relay
+lxc exec $DHCP_RELAY -- bash -c "cat > /etc/netplan/10-eth1.yaml <<NETPLAN
+network:
+  version: 2
+  ethernets:
+    eth1:
+      addresses: [192.168.20.2/24]
+      routes:
+        - to: default
+          via: 192.168.20.1
+NETPLAN
+netplan apply"
+
+sleep 5
+echo "[+] Network configured with netplan"
 
 #################################
 # Ansible roles (Phase 2)
