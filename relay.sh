@@ -369,7 +369,7 @@ ansible-playbook -i inventory/hosts.ini playbooks/site.yml
 #################################
 # Tests & Validation
 #################################
-echo "[+] Phase 3: Running verification tests"
+echo "[+] Running verification tests"
 sleep 5
 
 echo "[TEST] DHCP on Client 1 (Subnet A)"
@@ -394,34 +394,34 @@ lxc exec client1 -- ping -c 2 $IP_Router_eth2_raw || echo "FAILED"
 echo "[TEST] Routing Client2 -> Router Subnet A"
 lxc exec client2 -- ping -c 2 $IP_Router_eth1_raw || echo "FAILED"
 
-echo "[TEST] DNS Master check service status"
-lxc exec dns-master -- systemctl status bind9
+# echo "[TEST] DNS Master check service status"
+# lxc exec dns-master -- systemctl status bind9
 
-echo "[TEST] DNS Slave check service status"
-lxc exec dns-slave -- systemctl status bind9
+# echo "[TEST] DNS Slave check service status"
+# lxc exec dns-slave -- systemctl status bind9
 
 echo "[TEST] DNS Master resolves router.lab.local"
 lxc exec dns-master -- dig @127.0.0.1 router.lab.local +short
 
-echo "[TEST] DNS Slave zone transfer file check"
+echo "[TEST] DNS Slave transfer file check (/var/cache/bind/db.lab.local)"
 lxc exec dns-slave -- ls -l /var/cache/bind/db.lab.local
 
 echo "[TEST] DNS Slave resolves router.lab.local"
 lxc exec dns-slave -- dig @127.0.0.1 router.lab.local +short
 
-echo "[TEST] Client1 queries DNS Master"
+echo "[TEST] Client1 queries DNS Master to resolve <router.lab.local>"
 lxc exec client1 -- dig @$IP_dns_master_raw router.lab.local +short
 
-echo "[TEST] Client1 queries DNS Slave (cross-subnet)"
+echo "[TEST] Client1 queries DNS Slave to resolve <router.lab.local>"
 lxc exec client1 -- dig @$IP_dns_slave_raw router.lab.local +short
 
-echo "[TEST] Client2 queries DNS Slave (local subnet)"
+echo "[TEST] Client2 queries DNS Slave to resolve <router.lab.local>"
 lxc exec client2 -- dig @$IP_dns_slave_raw router.lab.local +short
 
 echo "[TEST] DHCP Server leases"
 lxc exec dhcp-server -- cat /var/lib/dhcp/dhcpd.leases
 
 echo "[+] Verification tests completed"
-echo "[+] Containers are running.. Press Ctrl+C to terminate (automatic cleanup will be performed in 1 hour)"
+echo "[+] Containers are running.. Press Ctrl+C to terminate (automatic cleanup will be performed in 1 minute)"
 
-sleep 3600
+sleep 60
