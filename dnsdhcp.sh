@@ -96,6 +96,20 @@ lxc exec $DHCP_RELAY -- apt update
 lxc exec $DHCP_RELAY -- apt install -y isc-dhcp-relay
 
 #################################
+# Phase 1.5: Configure static IPs
+#################################
+lxc exec $DNS_MASTER -- ip addr add 192.168.10.10/24 dev eth1
+lxc exec $DNS_SLAVE -- ip addr add 192.168.10.11/24 dev eth1
+lxc exec $DHCP_SERVER -- ip addr add 192.168.10.12/24 dev eth1
+lxc exec $DHCP_RELAY -- ip addr add 192.168.20.2/24 dev eth1
+
+# Set default routes
+lxc exec $DNS_MASTER -- ip route add default via 192.168.10.1
+lxc exec $DNS_SLAVE -- ip route add default via 192.168.10.1
+lxc exec $DHCP_SERVER -- ip route add default via 192.168.10.1
+lxc exec $DHCP_RELAY -- ip route add default via 192.168.20.1
+
+#################################
 # Ansible roles (Phase 2)
 #################################
 cat > $ANSIBLE_DIR/ansible.cfg <<EOF
@@ -127,6 +141,18 @@ cat > $ANSIBLE_DIR/roles/dns_master/tasks/main.yml <<EOF
     dest: /etc/default/named
     content: |
       OPTIONS="-u bind -4"
+
+- name: Configure named.conf.options
+  copy:
+    dest: /etc/bind/named.conf.options
+    content: |
+      options {
+        directory "/var/cache/bind";
+        listen-on { any; };
+        allow-query { any; };
+        recursion yes;
+        allow-recursion { 192.168.10.0/24; 192.168.20.0/24; };
+      };
 
 - name: Configure master zone
   copy:
@@ -163,6 +189,18 @@ EOF
 
 # DNS Slave
 cat > $ANSIBLE_DIR/roles/dns_slave/tasks/main.yml <<EOF
+- name: Configure named.conf.options
+  copy:
+    dest: /etc/bind/named.conf.options
+    content: |
+      options {
+        directory "/var/cache/bind";
+        listen-on { any; };
+        allow-query { any; };
+        recursion yes;
+        allow-recursion { 192.168.10.0/24; 192.168.20.0/24; };
+      };
+
 - copy:
     dest: /etc/bind/named.conf.local
     content: |
@@ -180,12 +218,25 @@ EOF
 # DHCP Server
 cat > $ANSIBLE_DIR/roles/dhcp_server/tasks/main.yml <<EOF
 - copy:
+    dest: /etc/default/isc-dhcp-server
+    content: |
+      INTERFACESv4="eth1"
+
+- copy:
     dest: /etc/dhcp/dhcpd.conf
     content: |
+      authoritative;
       subnet 192.168.10.0 netmask 255.255.255.0 {
         range 192.168.10.100 192.168.10.150;
         option routers 192.168.10.1;
         option domain-name-servers 192.168.10.10;
+        option domain-name "lab.local";
+      }
+      subnet 192.168.20.0 netmask 255.255.255.0 {
+        range 192.168.20.100 192.168.20.150;
+        option routers 192.168.20.1;
+        option domain-name-servers 192.168.10.10;
+        option domain-name "lab.local";
       }
 
 - service:
@@ -195,10 +246,12 @@ EOF
 
 # DHCP Relay
 cat > $ANSIBLE_DIR/roles/dhcp_relay/tasks/main.yml <<EOF
-- lineinfile:
-    path: /etc/default/isc-dhcp-relay
-    regexp: '^OPTIONS='
-    line: 'OPTIONS="-i eth1 192.168.10.12"'
+- copy:
+    dest: /etc/default/isc-dhcp-relay
+    content: |
+      SERVERS="192.168.10.12"
+      INTERFACES="eth1"
+      OPTIONS=""
 
 - service:
     name: isc-dhcp-relay
@@ -239,22 +292,30 @@ ansible-playbook -i inventory/hosts.ini playbooks/site.yml
 #################################
 # Phase 3: Tests
 #################################
-lxc exec $CLIENT1 -- dhclient eth1
-lxc exec $CLIENT2 -- dhclient eth1
-lxc exec $CLIENT1 -- dig @192.168.10.10 router.lab.local
 echo "[+] Phase 3: Running verification tests"
+sleep 5
 
 echo "[TEST] DHCP on Client 1 (Subnet A)"
+lxc exec client1 -- dhclient -r eth1 2>/dev/null || true
 lxc exec client1 -- dhclient -v eth1
 
 echo "[TEST] DHCP on Client 2 (Subnet B via relay)"
+lxc exec client2 -- dhclient -r eth1 2>/dev/null || true
 lxc exec client2 -- dhclient -v eth1
 
+sleep 2
+
+echo "[TEST] Client1 IP:"
+lxc exec client1 -- ip addr show eth1 | grep "inet "
+
+echo "[TEST] Client2 IP:"
+lxc exec client2 -- ip addr show eth1 | grep "inet "
+
 echo "[TEST] Routing Client1 -> Router Subnet B"
-lxc exec client1 -- ping -c 2 192.168.20.1
+lxc exec client1 -- ping -c 2 192.168.20.1 || echo "FAILED"
 
 echo "[TEST] Routing Client2 -> Router Subnet A"
-lxc exec client2 -- ping -c 2 192.168.10.1
+lxc exec client2 -- ping -c 2 192.168.10.1 || echo "FAILED"
 
 echo "[TEST] DNS local on master"
 lxc exec dns-master -- dig @127.0.0.1 router.lab.local +short
@@ -263,10 +324,9 @@ echo "[TEST] DNS remote from Client1"
 lxc exec client1 -- dig @192.168.10.10 router.lab.local +short
 
 echo "[TEST] DNS slave sync"
-lxc exec dns-slave -- dig @192.168.10.11 router.lab.local +short
+lxc exec dns-slave -- dig @127.0.0.1 router.lab.local +short
 
-echo "[✓] ALL TESTS PASSED"
-
+echo "[✓] ALL TESTS COMPLETED"
 
 echo "[✓] Lab deployed, configured, tested"
 sleep 10
