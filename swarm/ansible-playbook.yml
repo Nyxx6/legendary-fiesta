@@ -296,7 +296,7 @@
   tasks:
     - name: Install Nginx + ModSecurity
       apt:
-        name: [nginx, libnginx-mod-http-modsecurity, modsecurity-crs]
+        name: [nginx, libnginx-mod-http-modsecurity]
         state: present
         update_cache: yes
       environment:
@@ -324,21 +324,27 @@
         sysctl -w net.ipv4.ip_forward=1
       ignore_errors: yes
 
-    - name: Setup ModSecurity
+    - name: Setup ModSecurity (minimal)
       shell: |
         mkdir -p /etc/nginx/modsec
-        cp /etc/modsecurity/modsecurity.conf-recommended /etc/nginx/modsec/modsecurity.conf || \
-          echo -e "SecRuleEngine On\nSecRequestBodyAccess On" > /etc/nginx/modsec/modsecurity.conf
-        sed -i 's/SecRuleEngine DetectionOnly/SecRuleEngine On/' /etc/nginx/modsec/modsecurity.conf
+        cat > /etc/nginx/modsec/modsecurity.conf << 'EOF'
+        SecRuleEngine On
+        SecRequestBodyAccess On
+        SecResponseBodyAccess Off
+        SecRequestBodyLimit 13107200
+        SecRequestBodyNoFilesLimit 131072
+        EOF
+        
         echo 'Include /etc/nginx/modsec/modsecurity.conf' > /etc/nginx/modsec/main.conf
-        echo 'Include /usr/share/modsecurity-crs/owasp-crs.load' >> /etc/nginx/modsec/main.conf
-        sed -i 's/^IncludeOptional/Include/' /usr/share/modsecurity-crs/owasp-crs.load || true
 
     - copy:
         dest: /etc/nginx/nginx.conf
         content: "{{ lookup('file', 'templates/nginx-waf.conf') }}"
 
-    - systemd: name=nginx state=restarted enabled=yes
+    - systemd: 
+        name: nginx 
+        state: restarted 
+        enabled: yes
 
 - name: Configure HAProxy
   hosts: haproxy
