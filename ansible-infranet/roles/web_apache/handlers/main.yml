@@ -1,5 +1,0 @@
----
-- name: restart web_apache
-  service:
-    name: apache2
-    state: restarted

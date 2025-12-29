@@ -1,5 +1,0 @@
----
-- name: restart waf
-  service:
-    name: nginx
-    state: restarted

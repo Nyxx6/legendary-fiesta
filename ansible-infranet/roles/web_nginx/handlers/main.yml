@@ -1,5 +1,0 @@
----
-- name: restart web_nginx
-  service:
-    name: nginx
-    state: restarted
