@@ -1,0 +1,41 @@
+---
+- name: Update apt cache
+  apt:
+    update_cache: yes
+  register: apt_update
+  until: apt_update is success
+  retries: 5
+  delay: 10
+
+- name: Install basic packages
+  apt:
+    name:
+      - curl
+      - iproute2
+      - net-tools
+    state: present
+
+- name: Configure IP addresses
+  shell: |
+    if ! ip addr show dev {{ item.dev }} | grep -q "{{ item.ip }}"; then
+      ip addr flush dev {{ item.dev }} || true
+      ip addr add {{ item.ip }} dev {{ item.dev }}
+      ip link set {{ item.dev }} up
+    fi
+  loop: "{{ container_ips[inventory_hostname] | default([]) }}"
+  when: container_ips[inventory_hostname] is defined
+
+- name: Enable IP forwarding on WAFs
+  sysctl:
+    name: net.ipv4.ip_forward
+    value: '1'
+    state: present
+  when: "'waf_group' in group_names"
+
+- name: Configure default routes for web servers
+  shell: |
+    if ! ip route show | grep -q "default via {{ item.gw }}"; then
+      ip route add default via {{ item.gw }} dev {{ item.dev }} || true
+    fi
+  loop: "{{ container_routes[inventory_hostname] | default([]) }}"
+  when: container_routes[inventory_hostname] is defined

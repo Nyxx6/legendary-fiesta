@@ -1,0 +1,3 @@
+subjectAltName = DNS:haproxy.local,DNS:*.haproxy.local,DNS:ssi.local,DNS:*.ssi.local,DNS:gil.local,DNS:*.gil.local,IP:20.0.0.1
+keyUsage = digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
