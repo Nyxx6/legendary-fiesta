@@ -1,0 +1,59 @@
+---
+- name: Install Nginx and PHP-FPM
+  apt:
+    name:
+      - nginx
+      - php-fpm
+      - php-cli
+    state: present
+
+- name: Remove default nginx site
+  file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+
+- name: Create web directories
+  file:
+    path: "/var/www/{{ item }}"
+    state: directory
+    owner: www-data
+    group: www-data
+  loop:
+    - ssi
+    - gil
+
+- name: Create PHP socket symlink
+  shell: |
+    ACTUAL_SOCK=$(ls /var/run/php/php*-fpm.sock 2>/dev/null | head -1)
+    if [ -n "$ACTUAL_SOCK" ] && [ "$ACTUAL_SOCK" != "/var/run/php/php-fpm.sock" ]; then
+      ln -sf "$ACTUAL_SOCK" /var/run/php/php-fpm.sock
+    fi
+  args:
+    creates: /var/run/php/php-fpm.sock
+
+- name: Copy Nginx main config
+  template:
+    src: nginx-web.conf.j2
+    dest: /etc/nginx/nginx.conf
+  notify: restart nginx
+
+- name: Copy site configs
+  template:
+    src: "{{ item }}.conf.j2"
+    dest: "/etc/nginx/sites-enabled/{{ item }}.conf"
+  loop:
+    - ssi
+    - gil
+  notify: restart nginx
+
+- name: Copy web content
+  template:
+    src: "{{ item.src }}.j2"
+    dest: "/var/www/{{ item.site }}/index.{{ item.ext }}"
+  loop:
+    - { src: 'index-ssi.html', site: 'ssi', ext: 'html' }
+    - { src: 'index-ssi.php', site: 'ssi', ext: 'php' }
+    - { src: 'index-gil.html', site: 'gil', ext: 'html' }
+    - { src: 'index-gil.php', site: 'gil', ext: 'php' }
+  notify: restart nginx
+

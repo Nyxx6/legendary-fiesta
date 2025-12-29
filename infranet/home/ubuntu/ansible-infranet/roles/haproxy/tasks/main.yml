@@ -1,0 +1,40 @@
+---
+- name: Install HAProxy
+  apt:
+    name: haproxy
+    state: present
+
+- name: Create SSL directory
+  file:
+    path: /etc/ssl/private
+    state: directory
+    owner: haproxy
+    group: haproxy
+    mode: '0700'
+
+- name: Copy SSL certificates
+  copy:
+    src: "ssl_certs/{{ item }}"
+    dest: "/etc/ssl/private/{{ item }}"
+    owner: haproxy
+    group: haproxy
+    mode: '0600'
+  loop:
+    - haproxy-ecdsa.pem
+    - haproxy-rsa.pem
+  notify: restart haproxy
+
+- name: Copy HAProxy config
+  template:
+    src: haproxy.cfg.j2
+    dest: /etc/haproxy/haproxy.cfg
+  notify: restart haproxy
+
+- name: Configure internal DNS in /etc/hosts
+  lineinfile:
+    path: /etc/hosts
+    line: "{{ ansible_default_ipv4.address }} {{ item }}"
+  loop:
+    - ssi.local
+    - gil.local
+
