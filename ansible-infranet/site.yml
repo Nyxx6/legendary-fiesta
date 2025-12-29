@@ -1,0 +1,68 @@
+---
+- name: Phase 1 - Launch LXD Containers
+  hosts: local_host
+  gather_facts: yes
+  roles:
+    - lxd_setup
+
+- name: Phase 2 - Install Packages (Using Management Network)
+  hosts: lxd_containers
+  gather_facts: no
+  pre_tasks:
+    - name: Wait for python in container
+      raw: test -e /usr/bin/python3
+      register: python_check
+      until: python_check.rc == 0
+      retries: 30
+      delay: 5
+    - name: Gather facts manually
+      setup:
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+      register: apt_update
+      until: apt_update is success
+      retries: 5
+      delay: 10
+
+    - name: Install basic packages
+      apt:
+        name: [curl, iproute2, net-tools]
+        state: present
+
+    - name: Install Redis (if applicable)
+      apt: { name: redis-server, state: present }
+      when: "'redis_group' in group_names"
+
+    - name: Install Nginx and PHP (if applicable)
+      apt: { name: [nginx, php-fpm, php-cli], state: present }
+      when: "'web_nginx_group' in group_names"
+
+    - name: Install Apache (if applicable)
+      apt: { name: apache2, state: present }
+      when: "'web_apache_group' in group_names"
+
+    - name: Install WAF packages (if applicable)
+      apt: { name: [nginx, libnginx-mod-http-modsecurity, modsecurity-crs], state: present }
+      when: "'waf_group' in group_names"
+
+    - name: Install HAProxy (if applicable)
+      apt: { name: haproxy, state: present }
+      when: "'haproxy_group' in group_names"
+
+- name: Phase 3 - Attach Custom Networks
+  hosts: local_host
+  roles:
+    - lxd_network_attach
+
+- name: Phase 4 - Configure Network and Services
+  hosts: lxd_containers
+  gather_facts: yes
+  roles:
+    - common
+    - { role: redis, when: "'redis_group' in group_names" }
+    - { role: web_nginx, when: "'web_nginx_group' in group_names" }
+    - { role: web_apache, when: "'web_apache_group' in group_names" }
+    - { role: waf, when: "'waf_group' in group_names" }
+    - { role: haproxy, when: "'haproxy_group' in group_names" }

@@ -1,0 +1,48 @@
+---
+
+- name: Enable Apache modules
+  community.general.apache2_module:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - rewrite
+    - headers
+    - ssl
+    - proxy
+    - proxy_http
+  notify: restart apache
+
+- name: Remove default apache site
+  file:
+    path: /etc/apache2/sites-enabled/000-default.conf
+    state: absent
+
+- name: Create web directory
+  file:
+    path: /var/www/gil
+    state: directory
+    owner: www-data
+    group: www-data
+
+- name: Copy site configs
+  template:
+    src: "apache-{{ item }}.conf.j2"
+    dest: "/etc/apache2/sites-available/apache-{{ item }}.conf"
+  loop:
+    - gil
+  notify: restart apache
+
+- name: Enable sites
+  command: "a2ensite apache-{{ item }}"
+  args:
+    creates: "/etc/apache2/sites-enabled/apache-{{ item }}.conf"
+  loop:
+    - gil
+  notify: restart apache
+
+- name: Copy web content
+  template:
+    src: index-gil.html.j2
+    dest: /var/www/gil/index.html
+  notify: restart apache
+

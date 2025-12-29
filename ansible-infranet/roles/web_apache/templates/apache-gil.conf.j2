@@ -1,0 +1,13 @@
+<VirtualHost *:80>
+    ServerName gil.local
+    DocumentRoot /var/www/gil
+    
+    ErrorLog ${APACHE_LOG_DIR}/gil-error.log
+    CustomLog ${APACHE_LOG_DIR}/gil-access.log combined
+    
+    <Directory /var/www/gil>
+        Options Indexes FollowSymLinks
+        AllowOverride None
+        Require all granted
+    </Directory>
+</VirtualHost>

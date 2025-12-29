@@ -1,0 +1,33 @@
+---
+- name: Create LXD networks
+  shell: "lxc network create {{ item }} ipv6.dhcp=false ipv4.dhcp=false ipv6.nat=false ipv4.nat=false --type bridge || true"
+  loop:
+    - waf_net
+    - back_net
+    - redis_net
+
+- name: Launch LXD containers
+  shell: "lxc launch ubuntu:24.04 {{ item }} || true"
+  loop:
+    - haproxy
+    - waf1
+    - waf2
+    - web1
+    - web2
+    - web3
+    - redis
+
+- name: Wait for containers to be ready (Direct LXC check)
+  shell: "lxc exec {{ item }} -- true"
+  register: result
+  until: result.rc == 0
+  retries: 60
+  delay: 5
+  loop:
+    - haproxy
+    - waf1
+    - waf2
+    - web1
+    - web2
+    - web3
+    - redis
