@@ -1,0 +1,189 @@
+---
+- name: Full LXC Infrastructure Deployment
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    image: images:ubuntu/22.04
+
+    containers:
+      haproxy: {}
+      waf1: {}
+      waf2: {}
+      web1: {}
+      web2: {}
+      web3: {}
+      redis: {}
+
+    networks:
+      waf_net:
+        subnet: 20.0.0.0/24
+      back_net:
+        subnet: 192.168.1.0/24
+      redis_net:
+        subnet: 30.0.0.0/24
+
+    container_interfaces:
+      haproxy:
+        - { net: waf_net, dev: eth1, ip: 20.0.0.10/24 }
+
+      waf1:
+        - { net: waf_net, dev: eth1, ip: 20.0.0.11/24 }
+        - { net: back_net, dev: eth2, ip: 192.168.1.11/24 }
+
+      waf2:
+        - { net: waf_net, dev: eth1, ip: 20.0.0.12/24 }
+        - { net: back_net, dev: eth2, ip: 192.168.1.12/24 }
+
+      web1:
+        - { net: back_net, dev: eth1, ip: 192.168.1.21/24 }
+        - { net: redis_net, dev: eth2, ip: 30.0.0.21/24 }
+
+      web2:
+        - { net: back_net, dev: eth1, ip: 192.168.1.22/24 }
+        - { net: redis_net, dev: eth2, ip: 30.0.0.22/24 }
+
+      web3:
+        - { net: back_net, dev: eth1, ip: 192.168.1.23/24 }
+        - { net: redis_net, dev: eth2, ip: 30.0.0.23/24 }
+
+      redis:
+        - { net: redis_net, dev: eth1, ip: 30.0.0.10/24 }
+
+  tasks:
+
+  # ---------------- NETWORKS ----------------
+  - name: Create LXC networks
+    shell: >
+      lxc network create {{ item.key }}
+      ipv4.address={{ item.value.subnet }}
+      ipv4.nat=true
+      ipv6.address=none
+    loop: "{{ networks | dict2items }}"
+    ignore_errors: true
+
+  # ---------------- CONTAINERS ----------------
+  - name: Launch containers
+    shell: lxc launch {{ image }} {{ item.key }}
+    loop: "{{ containers | dict2items }}"
+    ignore_errors: true
+
+  - name: Wait for containers to boot
+    pause:
+      seconds: 5
+
+  # ---------------- NETWORK INTERFACES ----------------
+  - name: Attach networks to containers
+    shell: lxc network attach {{ iface.net }} {{ item.key }} {{ iface.dev }}
+    loop: "{{ container_interfaces | dict2items }}"
+    loop_control:
+      loop_var: item
+    with_items: "{{ item.value }}"
+    vars:
+      iface: "{{ item.value }}"
+    ignore_errors: true
+
+  - name: Configure IP addresses
+    shell: |
+      lxc exec {{ item.key }} -- ip addr add {{ iface.ip }} dev {{ iface.dev }}
+      lxc exec {{ item.key }} -- ip link set {{ iface.dev }} up
+    loop: "{{ container_interfaces | dict2items }}"
+    loop_control:
+      loop_var: item
+    with_items: "{{ item.value }}"
+    vars:
+      iface: "{{ item.value }}"
+    ignore_errors: true
+
+  # ---------------- BASE PACKAGES ----------------
+  - name: Install base packages
+    shell: |
+      lxc exec {{ item }} -- apt-get update
+      lxc exec {{ item }} -- apt-get install -y nginx curl
+    loop:
+      - waf1
+      - waf2
+      - web1
+      - web2
+      - web3
+
+  - name: Install HAProxy
+    shell: |
+      lxc exec haproxy -- apt-get update
+      lxc exec haproxy -- apt-get install -y haproxy
+
+  - name: Install Redis
+    shell: |
+      lxc exec redis -- apt-get update
+      lxc exec redis -- apt-get install -y redis-server
+
+  - name: Install ModSecurity and dependencies on WAFs
+    shell: |
+      lxc exec {{ item }} -- apt-get update
+      lxc exec {{ item }} -- apt-get install -y \
+        libnginx-mod-security \
+        modsecurity-crs
+    loop:
+      - waf1
+      - waf2
+  # ---------------- SSL ----------------
+  - name: Create SSL directory
+    shell: lxc exec haproxy -- mkdir -p /etc/ssl/private
+
+  - name: Push SSL certificates
+    shell: >
+      lxc file push files/ssl_certs/{{ item }}
+      haproxy:/etc/ssl/private/{{ item }}
+    loop:
+      - haproxy-rsa.pem
+      - haproxy-ecdsa.pem
+
+  - name: Fix SSL permissions
+    shell: |
+      lxc exec haproxy -- chown -R haproxy:haproxy /etc/ssl/private
+      lxc exec haproxy -- chmod 600 /etc/ssl/private/*
+
+  # ---------------- Modsec -----------------
+  - name: Enable ModSecurity module
+    shell: |
+      lxc exec {{ item }} -- sed -i 's/SecRuleEngine DetectionOnly/SecRuleEngine On/' \
+        /etc/modsecurity/modsecurity.conf
+    loop:
+      - waf1
+      - waf2
+      
+    - name: Deploy WAF nginx config
+    shell: >
+      lxc file push files/waf_nginx.conf
+      {{ item }}:/etc/nginx/sites-available/waf
+    loop:
+      - waf1
+      - waf2
+
+  - name: Enable WAF site
+    shell: |
+      lxc exec {{ item }} -- rm -f /etc/nginx/sites-enabled/default
+      lxc exec {{ item }} -- ln -sf /etc/nginx/sites-available/waf \
+        /etc/nginx/sites-enabled/waf
+    loop:
+      - waf1
+      - waf2
+
+  # ---------------- SERVICES ----------------
+  - name: Restart nginx
+    shell: |
+      lxc exec {{ item }} -- nginx -t
+      lxc exec {{ item }} -- systemctl restart nginx
+    loop:
+      - waf1
+      - waf2
+      - web1
+      - web2
+      - web3
+
+  - name: Restart haproxy
+    shell: lxc exec haproxy -- systemctl restart haproxy
+
+  - name: Restart redis
+    shell: lxc exec redis -- systemctl restart redis-server
