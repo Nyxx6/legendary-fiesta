@@ -1,0 +1,137 @@
+---
+- name: Deploy Infranet Infrastructure
+  hosts: localhost
+  connection: local
+  vars:
+    containers: [haproxy, waf1, waf2, web1, web2, web3, redis]
+    networks: [waf_net, back_net, redis_net]
+    container_ips:
+      haproxy: [{ dev: 'eth1', ip: '20.0.0.1/24' }]
+      waf1: [{ dev: 'eth1', ip: '20.0.0.2/24' }, { dev: 'eth2', ip: '192.168.1.1/24' }]
+      waf2: [{ dev: 'eth1', ip: '20.0.0.3/24' }, { dev: 'eth2', ip: '192.168.1.2/24' }]
+      web1: [{ dev: 'eth1', ip: '192.168.1.3/24' }, { dev: 'eth2', ip: '30.0.0.3/24' }]
+      web2: [{ dev: 'eth1', ip: '192.168.1.4/24' }, { dev: 'eth2', ip: '30.0.0.4/24' }]
+      web3: [{ dev: 'eth1', ip: '192.168.1.5/24' }, { dev: 'eth2', ip: '30.0.0.5/24' }]
+      redis: [{ dev: 'eth1', ip: '30.0.0.1/24' }]
+    routes:
+      web1: { gw: '192.168.1.1', dev: 'eth1' }
+      web2: { gw: '192.168.1.1', dev: 'eth1' }
+      web3: { gw: '192.168.1.2', dev: 'eth1' }
+
+  tasks:
+    - name: 1. Create LXD Networks
+      shell: "lxc network create {{ item }} ipv6.dhcp=false ipv4.dhcp=false ipv6.nat=false ipv4.nat=false --type bridge || true"
+      loop: "{{ networks }}"
+
+    - name: 2. Launch Containers
+      shell: "lxc launch ubuntu:24.04 {{ item }} || true"
+      loop: "{{ containers }}"
+
+    - name: 3. Wait for Containers to be Ready
+      shell: "lxc exec {{ item }} -- true"
+      register: ready
+      until: ready.rc == 0
+      retries: 60
+      delay: 5
+      loop: "{{ containers }}"
+
+    - name: 4. Install Packages (Using Management Network)
+      shell: |
+        lxc exec {{ item.name }} -- apt-get update
+        lxc exec {{ item.name }} -- apt-get install -y {{ item.pkgs | join(' ') }}
+      loop:
+        - { name: 'haproxy', pkgs: ['haproxy'] }
+        - { name: 'waf1', pkgs: ['nginx', 'libnginx-mod-http-modsecurity', 'modsecurity-crs'] }
+        - { name: 'waf2', pkgs: ['nginx', 'libnginx-mod-http-modsecurity', 'modsecurity-crs'] }
+        - { name: 'web1', pkgs: ['nginx', 'php-fpm', 'php-cli'] }
+        - { name: 'web2', pkgs: ['apache2'] }
+        - { name: 'web3', pkgs: ['nginx', 'php-fpm', 'php-cli'] }
+        - { name: 'redis', pkgs: ['redis-server'] }
+
+    - name: 5. Attach Custom Network Interfaces
+      shell: "lxc config device add {{ item.c }} {{ item.d }} nic nictype=bridged parent={{ item.n }} name={{ item.d }} || true"
+      loop:
+        - { c: 'haproxy', d: 'eth1', n: 'waf_net' }
+        - { c: 'waf1', d: 'eth1', n: 'waf_net' }
+        - { c: 'waf1', d: 'eth2', n: 'back_net' }
+        - { c: 'waf2', d: 'eth1', n: 'waf_net' }
+        - { c: 'waf2', d: 'eth2', n: 'back_net' }
+        - { c: 'web1', d: 'eth1', n: 'back_net' }
+        - { c: 'web1', d: 'eth2', n: 'redis_net' }
+        - { c: 'web2', d: 'eth1', n: 'back_net' }
+        - { c: 'web2', d: 'eth2', n: 'redis_net' }
+        - { c: 'web3', d: 'eth1', n: 'back_net' }
+        - { c: 'web3', d: 'eth2', n: 'redis_net' }
+        - { c: 'redis', d: 'eth1', n: 'redis_net' }
+
+    - name: 6. Restart Containers
+      shell: "lxc restart {{ item }}"
+      loop: "{{ containers }}"
+
+    - name: 7. Configure IP Addresses and Routing
+      shell: |
+        lxc exec {{ item.0.key }} -- ip link set {{ item.1.dev }} up
+        lxc exec {{ item.0.key }} -- ip addr add {{ item.1.ip }} dev {{ item.1.dev }}
+      loop: "{{ container_ips | dict2items | subelements('value') }}"
+
+    - name: 8. Set Default Routes for Web Servers
+      shell: "lxc exec {{ item.key }} -- ip route add default via {{ item.value.gw }} dev {{ item.value.dev }} || true"
+      loop: "{{ routes | dict2items }}"
+
+    - name: 9. Push Configuration Files
+      shell: "lxc file push files/{{ item.src }} {{ item.dest }}"
+      loop:
+        - { src: 'haproxy.cfg.j2', dest: 'haproxy/etc/haproxy/haproxy.cfg' }
+        - { src: 'nginx-waf.conf.j2', dest: 'waf1/etc/nginx/nginx.conf' }
+        - { src: 'nginx-waf.conf.j2', dest: 'waf2/etc/nginx/nginx.conf' }
+        - { src: 'nginx-web.conf.j2', dest: 'web1/etc/nginx/nginx.conf' }
+        - { src: 'nginx-web.conf.j2', dest: 'web3/etc/nginx/nginx.conf' }
+        - { src: 'ssi.conf.j2', dest: 'web1/etc/nginx/sites-enabled/ssi.conf' }
+        - { src: 'gil.conf.j2', dest: 'web1/etc/nginx/sites-enabled/gil.conf' }
+        - { src: 'ssi.conf.j2', dest: 'web3/etc/nginx/sites-enabled/ssi.conf' }
+        - { src: 'gil.conf.j2', dest: 'web3/etc/nginx/sites-enabled/gil.conf' }
+        - { src: 'apache-gil.conf.j2', dest: 'web2/etc/apache2/sites-available/apache-gil.conf' }
+
+    - name: 10. Final Service Restarts
+      shell: "lxc exec {{ item.c }} -- systemctl restart {{ item.s }}"
+      loop:
+        - { c: 'haproxy', s: 'haproxy' }
+        - { c: 'waf1', s: 'nginx' }
+        - { c: 'waf2', s: 'nginx' }
+        - { c: 'web1', s: 'nginx' }
+        - { c: 'web3', s: 'nginx' }
+        - { c: 'web2', s: 'apache2' }
+        - { c: 'redis', s: 'redis-server' }
+    - name: 11. Configure ModSecurity on WAFs
+      shell: |
+        lxc exec {{ item }} -- mkdir -p /etc/nginx/modsec
+        lxc exec {{ item }} -- cp /etc/modsecurity/modsecurity.conf-recommended /etc/nginx/modsec/modsecurity.conf
+        lxc exec {{ item }} -- sed -i 's/SecRuleEngine DetectionOnly/SecRuleEngine On/' /etc/nginx/modsec/modsecurity.conf
+        lxc exec {{ item }} -- sh -c "echo 'Include /etc/nginx/modsec/modsecurity.conf' > /etc/nginx/modsec/main.conf"
+        lxc exec {{ item }} -- sh -c "echo 'Include /usr/share/modsecurity-crs/owasp-crs.load' >> /etc/nginx/modsec/main.conf"
+        lxc exec {{ item }} -- sed -i 's/^IncludeOptional/Include/' /usr/share/modsecurity-crs/owasp-crs.load
+      loop: [waf1, waf2]
+
+    - name: 12. Configure Redis Password
+      shell: |
+        REDIS_PASS=$(openssl rand -base64 24)
+        lxc exec redis -- sed -i "s/bind 127.0.0.1 -::1/bind 30.0.0.1/" /etc/redis/redis.conf
+        lxc exec redis -- sh -c "echo 'requirepass $REDIS_PASS' >> /etc/redis/redis.conf"
+        lxc exec redis -- systemctl restart redis
+        echo "Redis Password: $REDIS_PASS" > redis_password.txt
+      register: redis_pass_out
+
+    - name: 13. Final Nginx Test and Restart
+      shell: "lxc exec {{ item }} -- nginx -t && lxc exec {{ item }} -- systemctl restart nginx"
+      loop: [waf1, waf2, web1, web3]
+
+    - name: 14. Push SSL Certs to HAProxy
+      shell: "lxc file push files/ssl_certs/{{ item }} haproxy/etc/ssl/private/{{ item }}"
+      loop: [haproxy-ecdsa.pem, haproxy-rsa.pem]
+
+    - name: 15. Set HAProxy Permissions
+      shell: |
+        lxc exec haproxy -- chown -R haproxy:haproxy /etc/ssl/private
+        lxc exec haproxy -- chmod 600 /etc/ssl/private/haproxy-ecdsa.pem
+        lxc exec haproxy -- chmod 600 /etc/ssl/private/haproxy-rsa.pem
+        lxc exec haproxy -- systemctl restart haproxy

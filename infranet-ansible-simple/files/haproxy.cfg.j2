@@ -1,0 +1,73 @@
+global
+	log /dev/log	local0
+	log /dev/log	local1 notice
+	chroot /var/lib/haproxy
+	stats socket /run/haproxy/admin.sock mode 660 level admin
+	stats timeout 30s
+	user haproxy
+	group haproxy
+	daemon
+
+	ca-base /etc/ssl/certs
+	crt-base /etc/ssl/private
+
+	ssl-default-bind-ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384
+	ssl-default-bind-ciphersuites TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256
+	ssl-default-bind-options ssl-min-ver TLSv1.2 no-tls-tickets
+
+defaults
+	log	global
+	mode	http
+	option	httplog
+	option	dontlognull
+	option forwardfor
+	timeout connect 5000
+	timeout client  50000
+	timeout server  50000
+	errorfile 400 /etc/haproxy/errors/400.http
+	errorfile 403 /etc/haproxy/errors/403.http
+	errorfile 408 /etc/haproxy/errors/408.http
+	errorfile 500 /etc/haproxy/errors/500.http
+	errorfile 502 /etc/haproxy/errors/502.http
+	errorfile 503 /etc/haproxy/errors/503.http
+	errorfile 504 /etc/haproxy/errors/504.http
+
+# HTTP Frontend - Redirect to HTTPS
+frontend http_front
+	bind *:80
+	# Redirect all HTTP to HTTPS
+	redirect scheme https code 301 if !{ ssl_fc }
+
+# HTTPS Frontend - SSL TERMINATION HERE
+frontend https_front
+	bind *:443 ssl crt /etc/ssl/private/haproxy-ecdsa.pem crt /etc/ssl/private/haproxy-rsa.pem alpn h2,http/1.1
+	
+	# Security headers
+	http-response set-header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+	http-response set-header X-Frame-Options "SAMEORIGIN"
+	http-response set-header X-Content-Type-Options "nosniff"
+	http-response set-header X-XSS-Protection "1; mode=block"
+	
+	# Add headers for backend (WAF will see these)
+	http-request set-header X-Forwarded-Proto https
+	http-request set-header X-Forwarded-Port 443
+	http-request add-header X-SSL-Client-CN %{+Q}[ssl_c_s_dn(cn)]
+	
+	# Log what domain is being accessed
+	capture request header Host len 50
+	
+	# Send decrypted HTTP traffic to WAFs
+	default_backend serveurswaf
+
+# Backend to WAFs (HTTP - no SSL)
+backend serveurswaf
+	balance roundrobin
+	http-check send meth GET uri / ver HTTP/1.1 hdr Host healthcheck
+	http-check expect status 200
+
+	# Forward original client IP and protocol info
+	http-request set-header X-Real-IP %[src]
+
+	# Send to WAFs on HTTP (port 80)
+	server waf1 20.0.0.2:80 check inter 2000 rise 2 fall 3
+	server waf2 20.0.0.3:80 check inter 2000 rise 2 fall 3
