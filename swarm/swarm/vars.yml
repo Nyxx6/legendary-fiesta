@@ -1,0 +1,40 @@
+---
+# Container names
+web1: web1
+web2: web2
+web3: web3
+waf1: waf1
+waf2: waf2
+haproxy: haproxy
+redis: redis
+
+# Network names
+back_net: back_net
+waf_net: waf_net
+redis_net: redis_net
+
+# Server groups
+web_servers: "{{ [apache_server] + nginx_servers }}"
+nginx_servers: ["{{ web1 }}", "{{ web3 }}"]
+apache_server: "{{ web2 }}"
+wafs: ["{{ waf1 }}", "{{ waf2 }}"]
+all_containers: "{{ web_servers + [haproxy] + wafs + [redis] }}"
+
+# IP Configuration
+haproxy_eth1_ip: 20.0.0.1
+waf1_eth0_ip: 20.0.0.2
+waf2_eth0_ip: 20.0.0.3
+waf1_eth1_ip: 192.168.1.1
+waf2_eth1_ip: 192.168.1.2
+web1_eth0_ip: 192.168.1.3
+web2_eth0_ip: 192.168.1.4
+web3_eth0_ip: 192.168.1.5
+web1_eth1_ip: 30.0.0.3
+web2_eth1_ip: 30.0.0.4
+web3_eth1_ip: 30.0.0.5
+redis_eth0_ip: 30.0.0.1
+
+# SSL Configuration
+ssl_cert_dir: "{{ playbook_dir }}/ssl_certs"
+ssl_ca_subj: "/C=FR/ST=IDF/L=Paris/O=Infrastructure/CN=RootCA"
+ssl_cert_subj: "/C=FR/ST=IDF/L=Paris/O=Infrastructure/CN=haproxy.local"
