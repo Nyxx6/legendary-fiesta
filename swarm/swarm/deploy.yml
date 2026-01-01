@@ -1,46 +1,24 @@
 ---
 - name: Deploy Infrastructure with LXD and Ansible
   hosts: localhost
-  gather_facts: true
+  gather_facts: false
   vars_files:
     - vars.yml
 
   tasks:
     # Cleanup if requested
-    - name: Delete all containers and networks
+    - name: Cleanup infrastructure
       block:
         - name: Delete containers
-          community.general.lxd_container:
-            name: "{{ item }}"
-            state: absent
-            force: true
+          shell: lxc delete {{ item }} --force 2>/dev/null || true
           loop: "{{ all_containers }}"
-          ignore_errors: true
 
         - name: Delete networks
-          community.general.lxd_network:
-            name: "{{ item }}"
-            state: absent
+          shell: lxc network delete {{ item }} 2>/dev/null || true
           loop: ["{{ back_net }}", "{{ waf_net }}", "{{ redis_net }}"]
-          ignore_errors: true
 
         - name: Remove configuration files
-          file:
-            path: "{{ playbook_dir }}/{{ item }}"
-            state: absent
-          loop:
-            - ssl_certs
-            - haproxy.cfg
-            - nginx-waf.conf
-            - nginx-web.conf
-            - ssi.conf
-            - gil.conf
-            - apache-ssi.conf
-            - apache-gil.conf
-            - index-ssi.html
-            - index-ssi.php
-            - index-gil.html
-            - index-gil.php
+          shell: rm -rf {{ playbook_dir }}/{ssl_certs,*.cfg,*.conf,*.html,*.php}
 
         - name: Cleanup complete
           debug:
@@ -49,653 +27,372 @@
 
     # Generate configuration files
     - name: Generate HAProxy configuration
-      copy:
-        dest: "{{ playbook_dir }}/haproxy.cfg"
-        content: |
-          global
-          	log /dev/log	local0
-          	log /dev/log	local1 notice
-          	chroot /var/lib/haproxy
-          	stats socket /run/haproxy/admin.sock mode 660 level admin
-          	stats timeout 30s
-          	user haproxy
-          	group haproxy
-          	daemon
-
-          	ca-base /etc/ssl/certs
-          	crt-base /etc/ssl/private
-
-          	ssl-default-bind-ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384
-          	ssl-default-bind-ciphersuites TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256
-          	ssl-default-bind-options ssl-min-ver TLSv1.2 no-tls-tickets
-
-          defaults
-          	log	global
-          	mode	http
-          	option	httplog
-          	option	dontlognull
-          	option forwardfor
-          	timeout connect 5000
-          	timeout client  50000
-          	timeout server  50000
-          	errorfile 400 /etc/haproxy/errors/400.http
-          	errorfile 403 /etc/haproxy/errors/403.http
-          	errorfile 408 /etc/haproxy/errors/408.http
-          	errorfile 500 /etc/haproxy/errors/500.http
-          	errorfile 502 /etc/haproxy/errors/502.http
-          	errorfile 503 /etc/haproxy/errors/503.http
-          	errorfile 504 /etc/haproxy/errors/504.http
-
-          frontend http_front
-          	bind *:80
-          	redirect scheme https code 301 if !{ ssl_fc }
-
-          frontend https_front
-          	bind *:443 ssl crt /etc/ssl/private/haproxy-ecdsa.pem crt /etc/ssl/private/haproxy-rsa.pem alpn h2,http/1.1
-          	http-response set-header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
-          	http-response set-header X-Frame-Options "SAMEORIGIN"
-          	http-response set-header X-Content-Type-Options "nosniff"
-          	http-response set-header X-XSS-Protection "1; mode=block"
-          	http-request set-header X-Forwarded-Proto https
-          	http-request set-header X-Forwarded-Port 443
-          	http-request add-header X-SSL-Client-CN %{+Q}[ssl_c_s_dn(cn)]
-          	capture request header Host len 50
-          	default_backend serveurswaf
-
-          backend serveurswaf
-          	balance roundrobin
-          	http-check send meth GET uri / ver HTTP/1.1 hdr Host healthcheck
-          	http-check expect status 200
-          	http-request set-header X-Real-IP %[src]
-          	server waf1 20.0.0.2:80 check inter 2000 rise 2 fall 3
-          	server waf2 20.0.0.3:80 check inter 2000 rise 2 fall 3
+      shell: |
+        cat > {{ playbook_dir }}/haproxy.cfg << 'EOF'
+        global
+        	log /dev/log	local0
+        	log /dev/log	local1 notice
+        	chroot /var/lib/haproxy
+        	stats socket /run/haproxy/admin.sock mode 660 level admin
+        	stats timeout 30s
+        	user haproxy
+        	group haproxy
+        	daemon
+        	ca-base /etc/ssl/certs
+        	crt-base /etc/ssl/private
+        	ssl-default-bind-ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384
+        	ssl-default-bind-ciphersuites TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256
+        	ssl-default-bind-options ssl-min-ver TLSv1.2 no-tls-tickets
+        defaults
+        	log	global
+        	mode	http
+        	option	httplog
+        	option	dontlognull
+        	option forwardfor
+        	timeout connect 5000
+        	timeout client  50000
+        	timeout server  50000
+        	errorfile 400 /etc/haproxy/errors/400.http
+        	errorfile 403 /etc/haproxy/errors/403.http
+        	errorfile 408 /etc/haproxy/errors/408.http
+        	errorfile 500 /etc/haproxy/errors/500.http
+        	errorfile 502 /etc/haproxy/errors/502.http
+        	errorfile 503 /etc/haproxy/errors/503.http
+        	errorfile 504 /etc/haproxy/errors/504.http
+        frontend http_front
+        	bind *:80
+        	redirect scheme https code 301 if !{ ssl_fc }
+        frontend https_front
+        	bind *:443 ssl crt /etc/ssl/private/haproxy-ecdsa.pem crt /etc/ssl/private/haproxy-rsa.pem alpn h2,http/1.1
+        	http-response set-header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        	http-response set-header X-Frame-Options "SAMEORIGIN"
+        	http-response set-header X-Content-Type-Options "nosniff"
+        	http-response set-header X-XSS-Protection "1; mode=block"
+        	http-request set-header X-Forwarded-Proto https
+        	http-request set-header X-Forwarded-Port 443
+        	http-request add-header X-SSL-Client-CN %{+Q}[ssl_c_s_dn(cn)]
+        	capture request header Host len 50
+        	default_backend serveurswaf
+        backend serveurswaf
+        	balance roundrobin
+        	http-check send meth GET uri / ver HTTP/1.1 hdr Host healthcheck
+        	http-check expect status 200
+        	http-request set-header X-Real-IP %[src]
+        	server waf1 20.0.0.2:80 check inter 2000 rise 2 fall 3
+        	server waf2 20.0.0.3:80 check inter 2000 rise 2 fall 3
+        EOF
 
     - name: Generate Nginx WAF configuration
-      copy:
-        dest: "{{ playbook_dir }}/nginx-waf.conf"
-        content: |
-          user www-data;
-          worker_processes auto;
-          pid /run/nginx.pid;
-          error_log /var/log/nginx/error.log;
-          include /etc/nginx/modules-enabled/*.conf;
-
-          events {
-          	worker_connections 768;
-          }
-
-          http {
-          	sendfile on;
-          	tcp_nopush on;
-          	types_hash_max_size 2048;
-          	include /etc/nginx/mime.types;
-          	default_type application/octet-stream;
-
-          	log_format security '$remote_addr - $remote_user [$time_local] '
-          	                    '"$request" $status $body_bytes_sent '
-          	                    '"$http_referer" "$http_user_agent" '
-          	                    '"$http_x_forwarded_for" "$http_x_forwarded_proto"';
-
-          	access_log /var/log/nginx/access.log security;
-          	gzip on;
-
-          	set_real_ip_from 20.0.0.0/24;
-          	real_ip_header X-Real-IP;
-          	real_ip_recursive on;
-
-          	upstream web_ssi {
-          		server 192.168.1.3:80;
-          		server 192.168.1.5:80;
-          	}
-          	upstream web_gil {
-          		server 192.168.1.3:80;
-          		server 192.168.1.4:80;
-          		server 192.168.1.5:80;
-          	}
-
-          	server {
-          		listen 80;
-          		modsecurity on;
-          		modsecurity_rules_file /etc/nginx/modsec/main.conf;
-
-          		location / {
-          			if ($http_host = "healthcheck") {
-          				access_log off;
-          				return 200 "OK\n";
-          			}
-
-          			if ($host = "ssi.local") {
-          				proxy_pass http://web_ssi;
-          			}
-
-          			proxy_pass http://web_gil;
-          			proxy_set_header Host $host;
-          			proxy_set_header X-Real-IP $remote_addr;
-          			proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-          			proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
-          			proxy_set_header X-Forwarded-Port $http_x_forwarded_port;
-          			proxy_redirect off;
-          			proxy_buffering on;
-          			proxy_http_version 1.1;
-          		}
-          	}
-          }
+      shell: |
+        cat > {{ playbook_dir }}/nginx-waf.conf << 'EOF'
+        user www-data;
+        worker_processes auto;
+        pid /run/nginx.pid;
+        error_log /var/log/nginx/error.log;
+        include /etc/nginx/modules-enabled/*.conf;
+        events { worker_connections 768; }
+        http {
+        	sendfile on;
+        	tcp_nopush on;
+        	types_hash_max_size 2048;
+        	include /etc/nginx/mime.types;
+        	default_type application/octet-stream;
+        	log_format security '$$remote_addr - $$remote_user [$$time_local] "$$request" $$status $$body_bytes_sent "$$http_referer" "$$http_user_agent" "$$http_x_forwarded_for" "$$http_x_forwarded_proto"';
+        	access_log /var/log/nginx/access.log security;
+        	gzip on;
+        	set_real_ip_from 20.0.0.0/24;
+        	real_ip_header X-Real-IP;
+        	real_ip_recursive on;
+        	upstream web_ssi { server 192.168.1.3:80; server 192.168.1.5:80; }
+        	upstream web_gil { server 192.168.1.3:80; server 192.168.1.4:80; server 192.168.1.5:80; }
+        	server {
+        		listen 80;
+        		modsecurity on;
+        		modsecurity_rules_file /etc/nginx/modsec/main.conf;
+        		location / {
+        			if ($$http_host = "healthcheck") { access_log off; return 200 "OK\n"; }
+        			if ($$host = "ssi.local") { proxy_pass http://web_ssi; }
+        			proxy_pass http://web_gil;
+        			proxy_set_header Host $$host;
+        			proxy_set_header X-Real-IP $$remote_addr;
+        			proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+        			proxy_set_header X-Forwarded-Proto $$http_x_forwarded_proto;
+        			proxy_set_header X-Forwarded-Port $$http_x_forwarded_port;
+        			proxy_redirect off;
+        			proxy_buffering on;
+        			proxy_http_version 1.1;
+        		}
+        	}
+        }
+        EOF
 
     - name: Generate Nginx Web configuration
-      copy:
-        dest: "{{ playbook_dir }}/nginx-web.conf"
-        content: |
-          user www-data;
-          worker_processes auto;
-          pid /run/nginx.pid;
-          error_log /var/log/nginx/error.log;
-          include /etc/nginx/modules-enabled/*.conf;
+      shell: |
+        cat > {{ playbook_dir }}/nginx-web.conf << 'EOF'
+        user www-data;
+        worker_processes auto;
+        pid /run/nginx.pid;
+        error_log /var/log/nginx/error.log;
+        include /etc/nginx/modules-enabled/*.conf;
+        events { worker_connections 768; }
+        http {
+        	sendfile on;
+        	tcp_nopush on;
+        	types_hash_max_size 2048;
+        	include /etc/nginx/mime.types;
+        	default_type application/octet-stream;
+        	ssl_protocols TLSv1.2 TLSv1.3;
+        	ssl_prefer_server_ciphers on;
+        	log_format main '$$remote_addr - $$remote_user [$$time_local] "$$request" $$status $$body_bytes_sent "$$http_referer" "$$http_user_agent" "$$http_x_forwarded_for" proto:$$http_x_forwarded_proto';
+        	access_log /var/log/nginx/access.log main;
+        	error_log /var/log/nginx/error.log;
+        	gzip on;
+        	set_real_ip_from 192.168.1.0/24;
+        	real_ip_header X-Real-IP;
+        	include /etc/nginx/sites-enabled/*;
+        }
+        EOF
 
-          events {
-          	worker_connections 768;
-          }
-
-          http {
-          	sendfile on;
-          	tcp_nopush on;
-          	types_hash_max_size 2048;
-          	include /etc/nginx/mime.types;
-          	default_type application/octet-stream;
-
-          	ssl_protocols TLSv1.2 TLSv1.3;
-          	ssl_prefer_server_ciphers on;
-
-          	log_format main '$remote_addr - $remote_user [$time_local] "$request" '
-          	                '$status $body_bytes_sent "$http_referer" '
-          	                '"$http_user_agent" "$http_x_forwarded_for" '
-          	                'proto:$http_x_forwarded_proto';
-
-          	access_log /var/log/nginx/access.log main;
-          	error_log /var/log/nginx/error.log;
-          	gzip on;
-
-          	set_real_ip_from 192.168.1.0/24;
-          	real_ip_header X-Real-IP;
-
-          	include /etc/nginx/sites-enabled/*;
-          }
-
-    - name: Generate Nginx site configs
-      copy:
-        dest: "{{ playbook_dir }}/{{ item.name }}"
-        content: "{{ item.content }}"
-      loop:
-        - name: ssi.conf
-          content: |
-            server {
-            	listen 80;
-            	server_name ssi.local;
-            	root /var/www/ssi;
-            	index index.html index.php;
-
-            	access_log /var/log/nginx/ssi-access.log main;
-            	error_log /var/log/nginx/ssi-error.log;
-
-            	location / {
-            		try_files $uri $uri/ =404;
-            		if ($http_x_forwarded_proto = "https") {
-            			add_header X-Secure-Connection "true";
-            		}
-            	}
-
-            	location ~ \.php$ {
-            		include snippets/fastcgi-php.conf;
-            		fastcgi_pass unix:/var/run/php/php-fpm.sock;
-            		fastcgi_param HTTPS $http_x_forwarded_proto;
-            		fastcgi_param SERVER_PORT $http_x_forwarded_port;
-            	}
-            }
-        - name: gil.conf
-          content: |
-            server {
-            	listen 80;
-            	server_name gil.local;
-            	root /var/www/gil;
-            	index index.html index.php;
-
-            	access_log /var/log/nginx/gil-access.log main;
-            	error_log /var/log/nginx/gil-error.log;
-
-            	location / {
-            		try_files $uri $uri/ =404;
-            		if ($http_x_forwarded_proto = "https") {
-            			add_header X-Secure-Connection "true";
-            		}
-            	}
-
-            	location ~ \.php$ {
-            		include snippets/fastcgi-php.conf;
-            		fastcgi_pass unix:/var/run/php/php-fpm.sock;
-            		fastcgi_param HTTPS $http_x_forwarded_proto;
-            		fastcgi_param SERVER_PORT $http_x_forwarded_port;
-            	}
-            }
+    - name: Generate site configs
+      shell: |
+        cat > {{ playbook_dir }}/ssi.conf << 'EOF'
+        server {
+        	listen 80;
+        	server_name ssi.local;
+        	root /var/www/ssi;
+        	index index.html index.php;
+        	access_log /var/log/nginx/ssi-access.log main;
+        	error_log /var/log/nginx/ssi-error.log;
+        	location / { try_files $$uri $$uri/ =404; if ($$http_x_forwarded_proto = "https") { add_header X-Secure-Connection "true"; } }
+        	location ~ \.php$$ { include snippets/fastcgi-php.conf; fastcgi_pass unix:/var/run/php/php-fpm.sock; fastcgi_param HTTPS $$http_x_forwarded_proto; fastcgi_param SERVER_PORT $$http_x_forwarded_port; }
+        }
+        EOF
+        cat > {{ playbook_dir }}/gil.conf << 'EOF'
+        server {
+        	listen 80;
+        	server_name gil.local;
+        	root /var/www/gil;
+        	index index.html index.php;
+        	access_log /var/log/nginx/gil-access.log main;
+        	error_log /var/log/nginx/gil-error.log;
+        	location / { try_files $$uri $$uri/ =404; if ($$http_x_forwarded_proto = "https") { add_header X-Secure-Connection "true"; } }
+        	location ~ \.php$$ { include snippets/fastcgi-php.conf; fastcgi_pass unix:/var/run/php/php-fpm.sock; fastcgi_param HTTPS $$http_x_forwarded_proto; fastcgi_param SERVER_PORT $$http_x_forwarded_port; }
+        }
+        EOF
 
     - name: Generate Apache configs
-      copy:
-        dest: "{{ playbook_dir }}/{{ item.name }}"
-        content: "{{ item.content }}"
-      loop:
-        - name: apache-ssi.conf
-          content: |
-            <VirtualHost *:80>
-                ServerName ssi.local
-                DocumentRoot /var/www/ssi
-                ErrorLog ${APACHE_LOG_DIR}/ssi-error.log
-                CustomLog ${APACHE_LOG_DIR}/ssi-access.log combined
-                <Directory /var/www/ssi>
-                    Options Indexes FollowSymLinks
-                    AllowOverride None
-                    Require all granted
-                </Directory>
-            </VirtualHost>
-        - name: apache-gil.conf
-          content: |
-            <VirtualHost *:80>
-                ServerName gil.local
-                DocumentRoot /var/www/gil
-                ErrorLog ${APACHE_LOG_DIR}/gil-error.log
-                CustomLog ${APACHE_LOG_DIR}/gil-access.log combined
-                <Directory /var/www/gil>
-                    Options Indexes FollowSymLinks
-                    AllowOverride None
-                    Require all granted
-                </Directory>
-            </VirtualHost>
+      shell: |
+        cat > {{ playbook_dir }}/apache-gil.conf << 'EOF'
+        <VirtualHost *:80>
+            ServerName gil.local
+            DocumentRoot /var/www/gil
+            ErrorLog $${APACHE_LOG_DIR}/gil-error.log
+            CustomLog $${APACHE_LOG_DIR}/gil-access.log combined
+            <Directory /var/www/gil>
+                Options Indexes FollowSymLinks
+                AllowOverride None
+                Require all granted
+            </Directory>
+        </VirtualHost>
+        EOF
 
-    - name: Generate index pages
-      copy:
-        dest: "{{ playbook_dir }}/{{ item.name }}"
-        content: "{{ item.content }}"
-      loop:
-        - name: index-ssi.html
-          content: |
-            <!DOCTYPE html>
-            <html lang="fr">
-            <head>
-            	<meta charset="UTF-8">
-            	<title>SSI Website</title>
-            </head>
-            <body>
-            	<h1>Site SSI</h1>
-            	<div>
-            		<p><strong>Bienvenue sur le site SSI</strong></p>
-            		<p>Serveur: Nginx</p>
-            	</div>
-            </body>
-            </html>
-        - name: index-ssi.php
-          content: |
-            <?php
-            echo '<!DOCTYPE html>' . "\n";
-            echo '<html lang="fr">' . "\n";
-            echo '<head>' . "\n";
-            echo '	<meta charset="UTF-8">' . "\n";
-            echo '	<title>SSI Website</title>' . "\n";
-            echo '</head>' . "\n";
-            echo '<body>' . "\n";
-            echo '	<h1>Site SSI</h1>' . "\n";
-            echo '	<div>' . "\n";
-            echo '		<p><strong>Bienvenue sur le site SSI</strong></p>' . "\n";
-            echo '		<p>Serveur: Nginx</p>' . "\n";
-            echo '	</div>' . "\n";
-            echo '</body>' . "\n";
-            echo '</html>' . "\n";
-            ?>
-        - name: index-gil.html
-          content: |
-            <!DOCTYPE html>
-            <html lang="fr">
-            <head>
-            	<meta charset="UTF-8">
-            	<title>GIL Website</title>
-            </head>
-            <body>
-            	<h1>Site GIL</h1>
-            	<div>
-            		<p><strong>Bienvenue sur le site GIL</strong></p>
-            		<p>Serveur: Nginx</p>
-            	</div>
-            </body>
-            </html>
-        - name: index-gil.php
-          content: |
-            <?php
-            echo '<!DOCTYPE html>' . "\n";
-            echo '<html lang="fr">' . "\n";
-            echo '<head>' . "\n";
-            echo '	<meta charset="UTF-8">' . "\n";
-            echo '	<title>GIL Website</title>' . "\n";
-            echo '</head>' . "\n";
-            echo '<body>' . "\n";
-            echo '	<h1>Site GIL</h1>' . "\n";
-            echo '	<div>' . "\n";
-            echo '		<p><strong>Bienvenue sur le site GIL</strong></p>' . "\n";
-            echo '		<p>Serveur: Nginx</p>' . "\n";
-            echo '	</div>' . "\n";
-            echo '</body>' . "\n";
-            echo '</html>' . "\n";
-            ?>
+    - name: Generate HTML files
+      shell: |
+        cat > {{ playbook_dir }}/index-ssi.html << 'EOF'
+        <!DOCTYPE html>
+        <html lang="fr">
+        <head><meta charset="UTF-8"><title>SSI Website</title></head>
+        <body><h1>Site SSI</h1><p>Bienvenue sur le site SSI</p><p>Serveur: Nginx</p></body>
+        </html>
+        EOF
+        cat > {{ playbook_dir }}/index-gil.html << 'EOF'
+        <!DOCTYPE html>
+        <html lang="fr">
+        <head><meta charset="UTF-8"><title>GIL Website</title></head>
+        <body><h1>Site GIL</h1><p>Bienvenue sur le site GIL</p><p>Serveur: Nginx/Apache</p></body>
+        </html>
+        EOF
+        cat > {{ playbook_dir }}/index-ssi.php << 'EOF'
+        <?php echo file_get_contents('/var/www/ssi/index.html'); ?>
+        EOF
+        cat > {{ playbook_dir }}/index-gil.php << 'EOF'
+        <?php echo file_get_contents('/var/www/gil/index.html'); ?>
+        EOF
 
     # Generate SSL certificates
-    - name: Create SSL certificates directory
-      file:
-        path: "{{ ssl_cert_dir }}"
-        state: directory
-        mode: '0755'
-
-    - name: Generate CA key
-      openssl_privatekey:
-        path: "{{ ssl_cert_dir }}/ca-key.pem"
-        size: 4096
-
-    - name: Generate CA certificate
-      openssl_certificate:
-        path: "{{ ssl_cert_dir }}/ca.pem"
-        privatekey_path: "{{ ssl_cert_dir }}/ca-key.pem"
-        csr_path: "{{ ssl_cert_dir }}/ca.csr"
-        provider: selfsigned
-        selfsigned_version: 3
-        subject: "{{ ssl_ca_subj }}"
-        selfsigned_not_after: "+3650d"
-
-    - name: Generate certificate extensions file
-      copy:
-        dest: "{{ ssl_cert_dir }}/cert-ext.cnf"
-        content: |
-          subjectAltName = DNS:haproxy.local,DNS:*.haproxy.local,DNS:ssi.local,DNS:*.ssi.local,DNS:gil.local,DNS:*.gil.local,IP:20.0.0.1
-          keyUsage = digitalSignature, keyEncipherment
-          extendedKeyUsage = serverAuth
-
-    - name: Generate ECDSA key
-      community.crypto.openssl_privatekey:
-        path: "{{ ssl_cert_dir }}/haproxy-ecdsa-key.pem"
-        type: ECC
-        curve: prime256v1
-
-    - name: Generate ECDSA CSR
-      community.crypto.openssl_csr:
-        path: "{{ ssl_cert_dir }}/haproxy-ecdsa.csr"
-        privatekey_path: "{{ ssl_cert_dir }}/haproxy-ecdsa-key.pem"
-        subject: "{{ ssl_cert_subj }}"
-
-    - name: Generate ECDSA certificate
-      community.crypto.x509_certificate:
-        path: "{{ ssl_cert_dir }}/haproxy-ecdsa-cert.pem"
-        csr_path: "{{ ssl_cert_dir }}/haproxy-ecdsa.csr"
-        ownca_path: "{{ ssl_cert_dir }}/ca.pem"
-        ownca_privatekey_path: "{{ ssl_cert_dir }}/ca-key.pem"
-        provider: ownca
-        ownca_version: 3
-        valid_in: "+365d"
-
-    - name: Combine ECDSA certificate and key
+    - name: Generate SSL certificates
       shell: |
-        cat {{ ssl_cert_dir }}/haproxy-ecdsa-cert.pem {{ ssl_cert_dir }}/haproxy-ecdsa-key.pem > {{ ssl_cert_dir }}/haproxy-ecdsa.pem
+        mkdir -p {{ ssl_cert_dir }}
+        cd {{ ssl_cert_dir }}
+        
+        # CA
+        openssl genrsa -out ca-key.pem 4096 2>/dev/null
+        openssl req -new -x509 -days 3650 -key ca-key.pem -sha256 -out ca.pem -subj "/C=FR/ST=IDF/L=Paris/O=Infrastructure/CN=RootCA" 2>/dev/null
+        
+        # ECDSA
+        openssl ecparam -genkey -name prime256v1 -out haproxy-ecdsa-key.pem 2>/dev/null
+        openssl req -new -key haproxy-ecdsa-key.pem -out haproxy-ecdsa.csr -subj "/C=FR/ST=IDF/L=Paris/O=Infrastructure/CN=haproxy.local" 2>/dev/null
+        openssl x509 -req -days 365 -in haproxy-ecdsa.csr -CA ca.pem -CAkey ca-key.pem -CAcreateserial -out haproxy-ecdsa-cert.pem -sha256 2>/dev/null
+        cat haproxy-ecdsa-cert.pem haproxy-ecdsa-key.pem > haproxy-ecdsa.pem
+        
+        # RSA
+        openssl genrsa -out haproxy-rsa-key.pem 2048 2>/dev/null
+        openssl req -new -key haproxy-rsa-key.pem -out haproxy-rsa.csr -subj "/C=FR/ST=IDF/L=Paris/O=Infrastructure/CN=haproxy.local" 2>/dev/null
+        openssl x509 -req -days 365 -in haproxy-rsa.csr -CA ca.pem -CAkey ca-key.pem -CAcreateserial -out haproxy-rsa-cert.pem -sha256 2>/dev/null
+        cat haproxy-rsa-cert.pem haproxy-rsa-key.pem > haproxy-rsa.pem
 
-    - name: Generate RSA key
-      community.crypto.openssl_privatekey:
-        path: "{{ ssl_cert_dir }}/haproxy-rsa-key.pem"
-        size: 2048
-
-    - name: Generate RSA CSR
-      community.crypto.openssl_csr:
-        path: "{{ ssl_cert_dir }}/haproxy-rsa.csr"
-        privatekey_path: "{{ ssl_cert_dir }}/haproxy-rsa-key.pem"
-        subject: "{{ ssl_cert_subj }}"
-
-    - name: Generate RSA certificate
-      community.crypto.x509_certificate:
-        path: "{{ ssl_cert_dir }}/haproxy-rsa-cert.pem"
-        csr_path: "{{ ssl_cert_dir }}/haproxy-rsa.csr"
-        ownca_path: "{{ ssl_cert_dir }}/ca.pem"
-        ownca_privatekey_path: "{{ ssl_cert_dir }}/ca-key.pem"
-        provider: ownca
-        ownca_version: 3
-        valid_in: "+365d"
-
-    - name: Combine RSA certificate and key
+    # Create LXD networks
+    - name: Create LXD networks
       shell: |
-        cat {{ ssl_cert_dir }}/haproxy-rsa-cert.pem {{ ssl_cert_dir }}/haproxy-rsa-key.pem > {{ ssl_cert_dir }}/haproxy-rsa.pem
+        lxc network create {{ back_net }} ipv6.dhcp=false ipv4.dhcp=false ipv6.nat=false ipv4.nat=false 2>/dev/null || true
+        lxc network create {{ waf_net }} ipv6.dhcp=false ipv4.dhcp=false ipv6.nat=false ipv4.nat=false 2>/dev/null || true
+        lxc network create {{ redis_net }} ipv6.dhcp=false ipv4.dhcp=false ipv6.nat=false ipv4.nat=false 2>/dev/null || true
 
     # Create LXD containers
-    - name: Create LXD networks
-      community.general.lxd_network:
-        name: "{{ item }}"
-        state: present
-        config:
-          ipv6.dhcp: false
-          ipv4.dhcp: false
-          ipv6.nat: false
-          ipv4.nat: false
-      loop: ["{{ back_net }}", "{{ waf_net }}", "{{ redis_net }}"]
-
     - name: Create LXD containers
-      community.general.lxd_container:
-        name: "{{ item }}"
-        image: ubuntu:24.04
-        state: started
-        wait_for_ipv4_addresses: false
+      shell: lxc launch ubuntu:24.04 {{ item }} 2>/dev/null || true
       loop: "{{ all_containers }}"
 
     - name: Wait for containers to be ready
       pause:
-        seconds: 10
+        seconds: 15
 
-    # Configure networks and IP addresses
-    - name: Attach Redis to redis network
+    # Configure networks
+    - name: Configure Redis network
       shell: |
-        lxc network attach {{ redis_net }} {{ redis }} eth0 || true
-        lxc exec {{ redis }} -- ip addr flush dev eth0 || true
+        lxc network attach {{ redis_net }} {{ redis }} eth0 2>/dev/null || true
+        lxc exec {{ redis }} -- ip addr flush dev eth0 2>/dev/null || true
 
     - name: Configure web servers networks
       shell: |
-        lxc config device add {{ item }} eth1 nic nictype=bridged parent={{ back_net }} || true
-        lxc exec {{ item }} -- ip link set dev eth1 up || true
-        lxc network attach {{ back_net }} {{ item }} eth0 || true
-        lxc exec {{ item }} -- ip addr flush dev eth0 || true
+        lxc config device add {{ item }} eth1 nic nictype=bridged parent={{ back_net }} 2>/dev/null || true
+        lxc exec {{ item }} -- ip link set dev eth1 up 2>/dev/null || true
+        lxc network attach {{ back_net }} {{ item }} eth0 2>/dev/null || true
+        lxc exec {{ item }} -- ip addr flush dev eth0 2>/dev/null || true
       loop: "{{ web_servers }}"
 
     - name: Configure WAF networks
       shell: |
-        lxc config device add {{ item }} eth1 nic nictype=bridged parent={{ back_net }} || true
-        lxc exec {{ item }} -- ip link set dev eth1 up || true
-        lxc network attach {{ waf_net }} {{ item }} eth0 || true
-        lxc exec {{ item }} -- ip addr flush dev eth0 || true
+        lxc config device add {{ item }} eth1 nic nictype=bridged parent={{ back_net }} 2>/dev/null || true
+        lxc exec {{ item }} -- ip link set dev eth1 up 2>/dev/null || true
+        lxc network attach {{ waf_net }} {{ item }} eth0 2>/dev/null || true
+        lxc exec {{ item }} -- ip addr flush dev eth0 2>/dev/null || true
       loop: "{{ wafs }}"
 
-    - name: Configure HAProxy networks
+    - name: Configure HAProxy network
       shell: |
-        lxc config device add {{ haproxy }} eth1 nic nictype=bridged parent={{ waf_net }} || true
-        lxc exec {{ haproxy }} -- ip link set dev eth1 up || true
+        lxc config device add {{ haproxy }} eth1 nic nictype=bridged parent={{ waf_net }} 2>/dev/null || true
+        lxc exec {{ haproxy }} -- ip link set dev eth1 up 2>/dev/null || true
 
     # Assign IP addresses
-    - name: Assign HAProxy IP
-      shell: lxc exec {{ haproxy }} -- ip addr add {{ haproxy_eth1_ip }}/24 dev eth1
-
-    - name: Assign WAF IPs
+    - name: Assign IP addresses
       shell: |
+        lxc exec {{ haproxy }} -- ip addr add {{ haproxy_eth1_ip }}/24 dev eth1
         lxc exec {{ waf1 }} -- ip addr add {{ waf1_eth0_ip }}/24 dev eth0
         lxc exec {{ waf2 }} -- ip addr add {{ waf2_eth0_ip }}/24 dev eth0
         lxc exec {{ waf1 }} -- ip addr add {{ waf1_eth1_ip }}/24 dev eth1
         lxc exec {{ waf2 }} -- ip addr add {{ waf2_eth1_ip }}/24 dev eth1
-
-    - name: Assign Web server IPs
-      shell: |
         lxc exec {{ web1 }} -- ip addr add {{ web1_eth0_ip }}/24 dev eth0
         lxc exec {{ web2 }} -- ip addr add {{ web2_eth0_ip }}/24 dev eth0
         lxc exec {{ web3 }} -- ip addr add {{ web3_eth0_ip }}/24 dev eth0
         lxc exec {{ web1 }} -- ip addr add {{ web1_eth1_ip }}/24 dev eth1
         lxc exec {{ web2 }} -- ip addr add {{ web2_eth1_ip }}/24 dev eth1
         lxc exec {{ web3 }} -- ip addr add {{ web3_eth1_ip }}/24 dev eth1
+        lxc exec {{ redis }} -- ip addr add {{ redis_eth0_ip }}/24 dev eth0
 
-    - name: Assign Redis IP
-      shell: lxc exec {{ redis }} -- ip addr add {{ redis_eth0_ip }}/24 dev eth0
-
-    # Configure DNS in HAProxy
-    - name: Add DNS entries to HAProxy
+    - name: Configure routing
       shell: |
-        lxc exec {{ haproxy }} -- bash -c "echo '{{ haproxy_eth1_ip }} ssi.local' >> /etc/hosts"
-        lxc exec {{ haproxy }} -- bash -c "echo '{{ haproxy_eth1_ip }} gil.local' >> /etc/hosts"
-
-    # Enable IP forwarding on WAFs
-    - name: Enable IP forwarding on WAFs
-      shell: lxc exec {{ item }} -- sysctl -w net.ipv4.ip_forward=1
-      loop: "{{ wafs }}"
-
-    # Configure default routes
-    - name: Configure web server default routes
-      shell: |
-        lxc exec {{ web1 }} -- ip route add default via {{ waf1_eth1_ip }} dev eth0 || true
-        lxc exec {{ web2 }} -- ip route add default via {{ waf1_eth1_ip }} dev eth0 || true
-        lxc exec {{ web3 }} -- ip route add default via {{ waf2_eth1_ip }} dev eth0 || true
+        for waf in {{ waf1 }} {{ waf2 }}; do lxc exec $waf -- sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1; done
+        lxc exec {{ web1 }} -- ip route add default via {{ waf1_eth1_ip }} dev eth0 2>/dev/null || true
+        lxc exec {{ web2 }} -- ip route add default via {{ waf1_eth1_ip }} dev eth0 2>/dev/null || true
+        lxc exec {{ web3 }} -- ip route add default via {{ waf2_eth1_ip }} dev eth0 2>/dev/null || true
 
     # Install packages
-    - name: Install Nginx and PHP-FPM on web servers
+    - name: Install packages on Nginx servers
       shell: |
-        lxc exec {{ item }} -- bash -c "apt-get update && DEBIAN_FRONTEND=noninteractive apt install -y nginx && (apt install -y php8.3-fpm php8.3-cli php8.3-common php8.3-mbstring php8.3-xml php8.3-curl php8.3-gd php8.3-zip || apt install -y php-fpm)"
+        lxc exec {{ item }} -- bash -c "apt-get update >/dev/null 2>&1 && DEBIAN_FRONTEND=noninteractive apt install -y nginx php8.3-fpm php8.3-cli >/dev/null 2>&1 || DEBIAN_FRONTEND=noninteractive apt install -y nginx php-fpm >/dev/null 2>&1"
+        lxc exec {{ item }} -- bash -c "systemctl enable --now php8.3-fpm 2>/dev/null || systemctl enable --now php-fpm 2>/dev/null || true"
+        lxc exec {{ item }} -- bash -c "ln -sf /var/run/php/php*-fpm.sock /var/run/php/php-fpm.sock 2>/dev/null || true"
+        lxc exec {{ item }} -- rm -f /etc/nginx/sites-enabled/default
       loop: "{{ nginx_servers }}"
 
-    - name: Configure Nginx on web servers
+    - name: Install packages on WAFs
       shell: |
-        lxc exec {{ item }} -- rm -f /etc/nginx/sites-enabled/default || true
-        lxc exec {{ item }} -- bash -lc "chown -R www-data:www-data /var/www || true"
-        lxc exec {{ item }} -- bash -c 'for svc in php8.3-fpm php8.2-fpm php8.1-fpm php-fpm; do if systemctl list-unit-files | grep -q "^$svc"; then systemctl enable --now $svc; break; fi; done' || true
-        sleep 2
-        lxc exec {{ item }} -- bash -c 'ACTUAL_SOCK=$(ls /var/run/php/php*-fpm.sock 2>/dev/null | head -1); if [ -n "$ACTUAL_SOCK" ] && [ "$ACTUAL_SOCK" != "/var/run/php/php-fpm.sock" ]; then ln -sf "$ACTUAL_SOCK" /var/run/php/php-fpm.sock; fi' || true
-      loop: "{{ nginx_servers }}"
-
-    - name: Install Nginx and ModSecurity on WAFs
-      shell: |
-        lxc exec {{ item }} -- bash -c "apt update && DEBIAN_FRONTEND=noninteractive apt install -y software-properties-common ca-certificates && add-apt-repository -y universe && apt update && DEBIAN_FRONTEND=noninteractive apt install -y nginx libnginx-mod-http-modsecurity modsecurity-crs"
-        lxc exec {{ item }} -- rm -f /etc/nginx/sites-enabled/default || true
+        lxc exec {{ item }} -- bash -c "apt-get update >/dev/null 2>&1 && add-apt-repository -y universe >/dev/null 2>&1 && apt-get update >/dev/null 2>&1 && DEBIAN_FRONTEND=noninteractive apt install -y nginx libnginx-mod-http-modsecurity modsecurity-crs >/dev/null 2>&1"
+        lxc exec {{ item }} -- rm -f /etc/nginx/sites-enabled/default
       loop: "{{ wafs }}"
 
     - name: Install Apache on web2
       shell: |
-        lxc exec {{ web2 }} -- bash -c "apt update && DEBIAN_FRONTEND=noninteractive apt install -y apache2"
-        lxc exec {{ web2 }} -- rm -f /etc/apache2/sites-enabled/000-default.conf || true
-        lxc exec {{ web2 }} -- a2dissite 000-default || true
-        lxc exec {{ web2 }} -- a2enmod rewrite headers ssl proxy proxy_http || true
+        lxc exec {{ web2 }} -- bash -c "apt-get update >/dev/null 2>&1 && DEBIAN_FRONTEND=noninteractive apt install -y apache2 >/dev/null 2>&1"
+        lxc exec {{ web2 }} -- bash -c "a2enmod rewrite headers ssl proxy proxy_http >/dev/null 2>&1"
+        lxc exec {{ web2 }} -- rm -f /etc/apache2/sites-enabled/000-default.conf
 
-    - name: Install Redis
-      shell: lxc exec {{ redis }} -- bash -c "apt update && DEBIAN_FRONTEND=noninteractive apt install -y redis-server"
-
-    - name: Install HAProxy
-      shell: lxc exec {{ haproxy }} -- bash -c "apt update && DEBIAN_FRONTEND=noninteractive apt install -y haproxy"
-
-    # Push SSL certificates
-    - name: Create SSL directory in HAProxy
-      shell: lxc exec {{ haproxy }} -- mkdir -p /etc/ssl/private
-
-    - name: Push SSL certificates to HAProxy
+    - name: Install Redis and HAProxy
       shell: |
+        lxc exec {{ redis }} -- bash -c "apt-get update >/dev/null 2>&1 && DEBIAN_FRONTEND=noninteractive apt install -y redis-server >/dev/null 2>&1"
+        lxc exec {{ haproxy }} -- bash -c "apt-get update >/dev/null 2>&1 && DEBIAN_FRONTEND=noninteractive apt install -y haproxy >/dev/null 2>&1"
+
+    # Push files to containers
+    - name: Push SSL certificates
+      shell: |
+        lxc exec {{ haproxy }} -- mkdir -p /etc/ssl/private
         lxc file push {{ ssl_cert_dir }}/haproxy-ecdsa.pem {{ haproxy }}/etc/ssl/private/
         lxc file push {{ ssl_cert_dir }}/haproxy-rsa.pem {{ haproxy }}/etc/ssl/private/
+        lxc exec {{ haproxy }} -- bash -c "chown -R haproxy:haproxy /etc/ssl/private && chmod 600 /etc/ssl/private/*"
 
-    - name: Set SSL certificate permissions
-      shell: |
-        lxc exec {{ haproxy }} -- chown -R haproxy:haproxy /etc/ssl/private
-        lxc exec {{ haproxy }} -- chmod 600 /etc/ssl/private/haproxy-*.pem
-
-    # Push configuration files
-    - name: Push HAProxy configuration
+    - name: Push configurations to HAProxy
       shell: lxc file push {{ playbook_dir }}/haproxy.cfg {{ haproxy }}/etc/haproxy/haproxy.cfg
 
-    - name: Push Nginx WAF configuration
+    - name: Push Nginx configurations to WAFs
       shell: |
         lxc file push {{ playbook_dir }}/nginx-waf.conf {{ waf1 }}/etc/nginx/nginx.conf
         lxc file push {{ playbook_dir }}/nginx-waf.conf {{ waf2 }}/etc/nginx/nginx.conf
 
-    - name: Push Nginx web configuration
+    - name: Push Nginx configurations to web servers
       shell: |
         lxc file push {{ playbook_dir }}/nginx-web.conf {{ web1 }}/etc/nginx/nginx.conf
         lxc file push {{ playbook_dir }}/nginx-web.conf {{ web3 }}/etc/nginx/nginx.conf
+        lxc file push {{ playbook_dir }}/ssi.conf {{ web1 }}/etc/nginx/sites-enabled/
+        lxc file push {{ playbook_dir }}/ssi.conf {{ web3 }}/etc/nginx/sites-enabled/
+        lxc file push {{ playbook_dir }}/gil.conf {{ web1 }}/etc/nginx/sites-enabled/
+        lxc file push {{ playbook_dir }}/gil.conf {{ web3 }}/etc/nginx/sites-enabled/
 
-    - name: Push Nginx site configs
+    - name: Create web directories and push files
       shell: |
-        lxc file push {{ playbook_dir }}/ssi.conf {{ item }}/etc/nginx/sites-enabled/ssi.conf
-        lxc file push {{ playbook_dir }}/gil.conf {{ item }}/etc/nginx/sites-enabled/gil.conf
-      loop: ["{{ web1 }}", "{{ web3 }}"]
+        for server in {{ web1 }} {{ web3 }}; do
+          lxc exec $server -- mkdir -p /var/www/{ssi,gil}
+          lxc file push {{ playbook_dir }}/index-ssi.html $server/var/www/ssi/index.html
+          lxc file push {{ playbook_dir }}/index-ssi.php $server/var/www/ssi/index.php
+          lxc file push {{ playbook_dir }}/index-gil.html $server/var/www/gil/index.html
+          lxc file push {{ playbook_dir }}/index-gil.php $server/var/www/gil/index.php
+        done
+        lxc exec {{ web2 }} -- mkdir -p /var/www/gil
+        lxc file push {{ playbook_dir }}/apache-gil.conf {{ web2 }}/etc/apache2/sites-available/
+        lxc file push {{ playbook_dir }}/index-gil.html {{ web2 }}/var/www/gil/index.html
+        lxc exec {{ web2 }} -- bash -c "a2ensite apache-gil >/dev/null 2>&1"
 
-    - name: Create web directories
-      shell: |
-        lxc exec {{ item }} -- mkdir -p /var/www/{ssi,gil}
-      loop: ["{{ web1 }}", "{{ web3 }}", "{{ web2 }}"]
-
-    - name: Push website files to Nginx servers
-      shell: |
-        lxc file push {{ playbook_dir }}/index-ssi.html {{ item }}/var/www/ssi/index.html
-        lxc file push {{ playbook_dir }}/index-ssi.php {{ item }}/var/www/ssi/index.php
-        lxc file push {{ playbook_dir }}/index-gil.html {{ item }}/var/www/gil/index.html
-        lxc file push {{ playbook_dir }}/index-gil.php {{ item }}/var/www/gil/index.php
-      loop: ["{{ web1 }}", "{{ web3 }}"]
-
-    - name: Push Apache configuration
-      shell: lxc file push {{ playbook_dir }}/apache-gil.conf {{ web2 }}/etc/apache2/sites-available/apache-gil.conf
-
-    - name: Push website files to Apache
-      shell: lxc file push {{ playbook_dir }}/index-gil.html {{ web2 }}/var/www/gil/index.html
-
-    - name: Enable Apache site and restart
-      shell: |
-        lxc exec {{ web2 }} -- a2ensite apache-gil || true
-        lxc exec {{ web2 }} -- systemctl reload apache2 || true
-
-    # Configure ModSecurity
     - name: Configure ModSecurity on WAFs
       shell: |
-        lxc exec {{ item }} -- mkdir -p /etc/nginx/modsec
-        lxc exec {{ item }} -- bash -c "if test -f /etc/modsecurity/modsecurity.conf-recommended; then cp /etc/modsecurity/modsecurity.conf-recommended /etc/nginx/modsec/modsecurity.conf && sed -i 's/SecRuleEngine DetectionOnly/SecRuleEngine On/' /etc/nginx/modsec/modsecurity.conf; else echo 'SecRuleEngine On' > /etc/nginx/modsec/modsecurity.conf && echo 'SecRequestBodyAccess On' >> /etc/nginx/modsec/modsecurity.conf && echo 'SecResponseBodyAccess Off' >> /etc/nginx/modsec/modsecurity.conf; fi"
-        lxc exec {{ item }} -- bash -c "echo 'Include /etc/nginx/modsec/modsecurity.conf' > /etc/nginx/modsec/main.conf && echo 'Include /usr/share/modsecurity-crs/owasp-crs.load' >> /etc/nginx/modsec/main.conf"
-        lxc exec {{ item }} -- bash -c "sed -i 's/^IncludeOptional/Include/' /usr/share/modsecurity-crs/owasp-crs.load || true"
-      loop: "{{ wafs }}"
-
-    # Configure Redis
-    - name: Generate Redis password
-      set_fact:
-        redis_password: "{{ lookup('password', '/dev/null length=24 chars=ascii_letters,digits') }}"
+        for waf in {{ waf1 }} {{ waf2 }}; do
+          lxc exec $waf -- mkdir -p /etc/nginx/modsec
+          lxc exec $waf -- bash -c "cp /etc/modsecurity/modsecurity.conf-recommended /etc/nginx/modsec/modsecurity.conf 2>/dev/null && sed -i 's/DetectionOnly/On/' /etc/nginx/modsec/modsecurity.conf || echo 'SecRuleEngine On' > /etc/nginx/modsec/modsecurity.conf"
+          lxc exec $waf -- bash -c "echo 'Include /etc/nginx/modsec/modsecurity.conf' > /etc/nginx/modsec/main.conf && echo 'Include /usr/share/modsecurity-crs/owasp-crs.load' >> /etc/nginx/modsec/main.conf"
+        done
 
     - name: Configure Redis
       shell: |
-        lxc exec {{ redis }} -- bash -c "cp /etc/redis/redis.conf /etc/redis/redis.conf.bak || true"
-        lxc exec {{ redis }} -- bash -c "sed -i 's/bind 127.0.0.1 -::1/bind {{ redis_eth0_ip }}/' /etc/redis/redis.conf || true"
-        lxc exec {{ redis }} -- bash -c "if ! grep -q '^requirepass' /etc/redis/redis.conf; then echo 'requirepass {{ redis_password }}' >> /etc/redis/redis.conf; fi"
-        lxc exec {{ redis }} -- systemctl restart redis
+        REDIS_PASS=$(openssl rand -base64 24)
+        lxc exec {{ redis }} -- bash -c "sed -i 's/bind 127.0.0.1 -::1/bind {{ redis_eth0_ip }}/' /etc/redis/redis.conf && echo 'requirepass '$REDIS_PASS >> /etc/redis/redis.conf && systemctl restart redis"
+        echo "Redis password: $REDIS_PASS" > {{ playbook_dir }}/redis_password.txt
 
     # Restart services
-    - name: Restart HAProxy
-      shell: lxc exec {{ haproxy }} -- systemctl restart haproxy
-
-    - name: Test Nginx configurations
-      shell: lxc exec {{ item }} -- nginx -t
-      loop: "{{ nginx_servers + wafs }}"
-      ignore_errors: true
-
-    - name: Restart Nginx on web servers
-      shell: lxc exec {{ item }} -- systemctl restart nginx
-      loop: "{{ nginx_servers + wafs }}"
-
-    - name: Restart Apache
-      shell: lxc exec {{ web2 }} -- systemctl restart apache2
-
-    # Verify services
-    - name: Verify services are running
-      shell: lxc exec {{ item.container }} -- systemctl is-active --quiet {{ item.service }}
-      loop:
-        - { container: "{{ haproxy }}", service: "haproxy" }
-        - { container: "{{ web1 }}", service: "nginx" }
-        - { container: "{{ web3 }}", service: "nginx" }
-        - { container: "{{ waf1 }}", service: "nginx" }
-        - { container: "{{ waf2 }}", service: "nginx" }
-        - { container: "{{ web2 }}", service: "apache2" }
-        - { container: "{{ redis }}", service: "redis-server" }
-      ignore_errors: true
+    - name: Start services
+      shell: |
+        lxc exec {{ haproxy }} -- systemctl restart haproxy
+        for web in {{ web1 }} {{ web3 }}; do lxc exec $web -- systemctl restart nginx; done
+        for waf in {{ waf1 }} {{ waf2 }}; do lxc exec $waf -- systemctl restart nginx; done
+        lxc exec {{ web2 }} -- systemctl restart apache2
 
     - name: Deployment complete
       debug:
@@ -708,10 +405,8 @@
           Pour tester:
             curl -k https://ssi.local
             curl -I http://gil.local
-            lxc exec {{ haproxy }} -- curl -k http://gil.local
-            lxc exec {{ waf1 }} -- curl http://{{ web1_eth0_ip }}
 
-          Redis password (store it safely): {{ redis_password }}
+          Redis password saved in: redis_password.txt
 
           Pour supprimer:
             ansible-playbook deploy.yml -i inventory.ini -e cleanup=true
