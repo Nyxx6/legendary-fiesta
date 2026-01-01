@@ -337,40 +337,63 @@
     - name: Push SSL certificates
       shell: |
         lxc exec {{ haproxy }} -- mkdir -p /etc/ssl/private
-        lxc file push {{ ssl_cert_dir }}/haproxy-ecdsa.pem {{ haproxy }}/etc/ssl/private/
-        lxc file push {{ ssl_cert_dir }}/haproxy-rsa.pem {{ haproxy }}/etc/ssl/private/
+        lxc file push {{ ssl_cert_dir }}/haproxy-ecdsa.pem {{ haproxy }}/tmp/haproxy-ecdsa.pem
+        lxc exec {{ haproxy }} -- mv -f /tmp/haproxy-ecdsa.pem /etc/ssl/private/haproxy-ecdsa.pem
+        lxc file push {{ ssl_cert_dir }}/haproxy-rsa.pem {{ haproxy }}/tmp/haproxy-rsa.pem
+        lxc exec {{ haproxy }} -- mv -f /tmp/haproxy-rsa.pem /etc/ssl/private/haproxy-rsa.pem
         lxc exec {{ haproxy }} -- bash -c "chown -R haproxy:haproxy /etc/ssl/private && chmod 600 /etc/ssl/private/*"
 
     - name: Push configurations to HAProxy
-      shell: lxc file push {{ playbook_dir }}/haproxy.cfg {{ haproxy }}/etc/haproxy/haproxy.cfg
+      shell: |
+        lxc file push {{ playbook_dir }}/haproxy.cfg {{ haproxy }}/tmp/haproxy.cfg
+        lxc exec {{ haproxy }} -- mv -f /tmp/haproxy.cfg /etc/haproxy/haproxy.cfg
 
     - name: Push Nginx configurations to WAFs
       shell: |
-        lxc file push {{ playbook_dir }}/nginx-waf.conf {{ waf1 }}/etc/nginx/nginx.conf
-        lxc file push {{ playbook_dir }}/nginx-waf.conf {{ waf2 }}/etc/nginx/nginx.conf
+        lxc file push {{ playbook_dir }}/nginx-waf.conf {{ waf1 }}/tmp/nginx-waf.conf
+        lxc exec {{ waf1 }} -- mv -f /tmp/nginx-waf.conf /etc/nginx/nginx.conf
+        lxc file push {{ playbook_dir }}/nginx-waf.conf {{ waf2 }}/tmp/nginx-waf.conf
+        lxc exec {{ waf2 }} -- mv -f /tmp/nginx-waf.conf /etc/nginx/nginx.conf
 
     - name: Push Nginx configurations to web servers
       shell: |
-        lxc file push {{ playbook_dir }}/nginx-web.conf {{ web1 }}/etc/nginx/nginx.conf
-        lxc file push {{ playbook_dir }}/nginx-web.conf {{ web3 }}/etc/nginx/nginx.conf
-        lxc file push {{ playbook_dir }}/ssi.conf {{ web1 }}/etc/nginx/sites-enabled/
-        lxc file push {{ playbook_dir }}/ssi.conf {{ web3 }}/etc/nginx/sites-enabled/
-        lxc file push {{ playbook_dir }}/gil.conf {{ web1 }}/etc/nginx/sites-enabled/
-        lxc file push {{ playbook_dir }}/gil.conf {{ web3 }}/etc/nginx/sites-enabled/
+        lxc file push {{ playbook_dir }}/nginx-web.conf {{ web1 }}/tmp/nginx-web.conf
+        lxc exec {{ web1 }} -- mv -f /tmp/nginx-web.conf /etc/nginx/nginx.conf
+        lxc file push {{ playbook_dir }}/nginx-web.conf {{ web3 }}/tmp/nginx-web.conf
+        lxc exec {{ web3 }} -- mv -f /tmp/nginx-web.conf /etc/nginx/nginx.conf
+
+        lxc file push {{ playbook_dir }}/ssi.conf {{ web1 }}/tmp/ssi.conf
+        lxc exec {{ web1 }} -- mv -f /tmp/ssi.conf /etc/nginx/sites-enabled/ssi.conf
+        lxc file push {{ playbook_dir }}/gil.conf {{ web1 }}/tmp/gil.conf
+        lxc exec {{ web1 }} -- mv -f /tmp/gil.conf /etc/nginx/sites-enabled/gil.conf
+
+        lxc file push {{ playbook_dir }}/ssi.conf {{ web3 }}/tmp/ssi.conf
+        lxc exec {{ web3 }} -- mv -f /tmp/ssi.conf /etc/nginx/sites-enabled/ssi.conf
+        lxc file push {{ playbook_dir }}/gil.conf {{ web3 }}/tmp/gil.conf
+        lxc exec {{ web3 }} -- mv -f /tmp/gil.conf /etc/nginx/sites-enabled/gil.conf
 
     - name: Create web directories and push files
       shell: |
         for server in {{ web1 }} {{ web3 }}; do
-          lxc exec $server -- mkdir -p /var/www/{ssi,gil}
-          lxc file push {{ playbook_dir }}/index-ssi.html $server/var/www/ssi/index.html
-          lxc file push {{ playbook_dir }}/index-ssi.php $server/var/www/ssi/index.php
-          lxc file push {{ playbook_dir }}/index-gil.html $server/var/www/gil/index.html
-          lxc file push {{ playbook_dir }}/index-gil.php $server/var/www/gil/index.php
+          lxc exec $server -- mkdir -p /var/www/ssi /var/www/gil
+          lxc file push {{ playbook_dir }}/index-ssi.html $server/tmp/index-ssi.html
+          lxc exec $server -- mv -f /tmp/index-ssi.html /var/www/ssi/index.html
+          lxc file push {{ playbook_dir }}/index-ssi.php $server/tmp/index-ssi.php
+          lxc exec $server -- mv -f /tmp/index-ssi.php /var/www/ssi/index.php
+
+          lxc file push {{ playbook_dir }}/index-gil.html $server/tmp/index-gil.html
+          lxc exec $server -- mv -f /tmp/index-gil.html /var/www/gil/index.html
+          lxc file push {{ playbook_dir }}/index-gil.php $server/tmp/index-gil.php
+          lxc exec $server -- mv -f /tmp/index-gil.php /var/www/gil/index.php
         done
+
+        # Apache web2
         lxc exec {{ web2 }} -- mkdir -p /var/www/gil
-        lxc file push {{ playbook_dir }}/apache-gil.conf {{ web2 }}/etc/apache2/sites-available/
-        lxc file push {{ playbook_dir }}/index-gil.html {{ web2 }}/var/www/gil/index.html
-        lxc exec {{ web2 }} -- bash -c "a2ensite apache-gil >/dev/null 2>&1"
+        lxc file push {{ playbook_dir }}/apache-gil.conf {{ web2 }}/tmp/apache-gil.conf
+        lxc exec {{ web2 }} -- mv -f /tmp/apache-gil.conf /etc/apache2/sites-available/apache-gil.conf
+        lxc file push {{ playbook_dir }}/index-gil.html {{ web2 }}/tmp/index-gil.html
+        lxc exec {{ web2 }} -- mv -f /tmp/index-gil.html /var/www/gil/index.html
+        lxc exec {{ web2 }} -- bash -c "a2ensite apache-gil >/dev/null 2>&1 || true"
 
     - name: Configure ModSecurity on WAFs
       shell: |
