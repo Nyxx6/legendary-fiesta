@@ -1,45 +1,20 @@
 
-### 1) Créer une bi-clé de signature (Ed25519)
+# concatenate s0 and s1 into a single binary input
+cat s0.bin s1.bin > s01.bin
 
-```bash
-openssl genpkey -algorithm ed25519 -out NAME.key
-```
+# derive 64 bytes: first 32 -> tmpkey, next 32 -> kA1
+openssl kdf -engine default -derive -hkdf -sha256 -in s01.bin -out key_material.bin -len 64
 
-### 2) Extraire et publier la clé publique (pNAME)
+# split the derived key
+head -c 32 key_material.bin > tmpkey.bin
+tail -c 32 key_material.bin > kA1.bin
 
-```bash
-openssl pkey -in NAME.key -pubout -out pNAME.pub
-```
+# generate a random 12-byte IV
+openssl rand -out iv1.bin 12
 
-### 3) Preuve de possession de la clé secrète
+# encrypt mA1 using AES-256-GCM
+openssl enc -aes-256-gcm -in mA1.txt -out cA1.bin -K $(xxd -p kA1.bin) -iv $(xxd -p iv1.bin) -nosalt -p
 
-On signe un message clair qui vous identifie. Exemple :
-
-```bash
-echo "Je suis NAME et je prouve la possession de ma clé privée" > preuve.txt
-```
-
-Signer le message :
-
-```bash
-openssl pkeyutl -sign -inkey NAME.key -in preuve.txt -out preuve.sig
-```
-
-### 4) Vérification de la signature
-
-```bash
-openssl pkeyutl -verify -pubin -inkey pNAME.pub -in preuve.txt -sigfile preuve.sig
-```
-
-### À publier dans le chat
-
-* Le contenu de `pNAME.pub`
-* Le message signé (`preuve.txt`)
-* La signature (`preuve.sig` en base64 si demandé) :
-
-```bash
-base64 preuve.sig
-```
 # generate a new random 12-byte IV
 openssl rand -out iv2.bin 12
 
