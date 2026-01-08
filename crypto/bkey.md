@@ -40,3 +40,8 @@ openssl pkeyutl -verify -pubin -inkey pNAME.pub -in preuve.txt -sigfile preuve.s
 ```bash
 base64 preuve.sig
 ```
+# generate a new random 12-byte IV
+openssl rand -out iv2.bin 12
+
+# encrypt mA2 using AES-256-GCM
+openssl enc -aes-256-gcm -in mA2.txt -out cA2.bin -K $(xxd -p kA2.bin) -iv $(xxd -p iv2.bin) -nosalt -p
