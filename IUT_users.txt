@@ -1,0 +1,20 @@
+ID_UTIL	VUNAME	MDP_UTIL	STRICT_AUDIT	VERIF_CERT	CERT_NAME	AUTCONS	AUTSAIS	AUTVALI	AUTADMI	AUTSIGN	DEVICE_SIGN_TYPE	PROVIDER	SFXML	KEYSET	SIGN_KEY_LENGTH	ERR_LOGIN	AUTAPPRO
+A                   	A       	aw==	0	0		1	1	1	1	0	0		0		1024	0	1
+ADMIN               	ADMIN   	a25nY2Q=	0	0		1	1	1	1	0	0		0		1024	1	1
+BEBRC               	BEBRC   	REVFWERFRVg=	0	0		1	1	1	1	0	0		0		1024	0	1
+BEDUI               	BEDUI   	Q1lLTl9IGx0b	0	0		1	1	1	1	0	0		0		1024	0	1
+BEEMS               	BEEMS   	SUVGRVhLTkU=	0	0		1	1	1	1	0	0		0		1024	0	1
+BEFAU               	BEFAU   	S0RES0xLGhs=	0	0		1	1	1	1	0	0		0		1024	0	1
+BEFCF               	BEFCF   	GxgZHh8=	0	0		1	1	1	1	0	0		0		1024	0	1
+BEGEI               	BEGEI   	fmt4cGtk	0	0		1	1	1	1	0	0		0		1024	0	1
+BEHTP               	BEHTP   	Z2t4aWV5	0	0		1	1	1	1	0	0		0		1024	0	1
+BESLD               	BESLD   	aG95Zm4=	0	0		1	1	1	1	0	0		0		1024	0	1
+BEVIX               	BEVIX   	XkNYS05PHxo=	0	0		1	1	1	1	0	0		0		1024	0	1
+BFHUC               	BFHUC   	aGxif2k=	0	0		1	1	1	1	0	0		0		1024	0	1
+BFSWA               	BFSWA   	aGtnaGN5	0	0		1	1	1	1	0	0		0		1024	0	1
+BFVEL               	BFVEL   	Z2t5aWt4aw==	0	0		1	1	1	1	0	0		0		1024	0	1
+CSGOY               	CSGOY   	aXltZXM=	0	0		1	1	1	1	0	0		0		1024	0	1
+CSLAP               	CSLAP   	aGNoZX8=	0	0		1	1	1	1	0	0		0		1024	0	1
+CSOTC               	CSOTC   	Z2tta2Zj	0	0		1	1	1	1	0	0		0		1024	0	1
+CSRBN               	CSRBN   	SUtHQ0ZGTw==	0	0		1	1	1	1	0	0		0		1024	0	1
+CSRUS               	CSRUS   	WUtETlhLGxk=	0	0		1	1	1	1	0	0		0		1024	0	1
