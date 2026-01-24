@@ -476,7 +476,7 @@ for server in $WEB_SERVERS; do
 	lxc exec $server -- bash -c "apt-get update && DEBIAN_FRONTEND=noninteractive apt install -y docker.io" || exit 1
 	lxc exec $server -- systemctl enable --now docker
 done
-
+sleep 3
 for server in $WAFS; do
 	echo "  Installation Nginx + ModSecurity (and CRS) sur $server"
 	# Enable 'universe' (needed for some packages) and install nginx + libnginx-mod-http-modsecurity and CRS
@@ -548,12 +548,25 @@ HA_EXT_IP=$(lxc exec $HA_PROXY -- ip -4 addr show eth0 | grep -oP '(?<=inet\s)\d
 lxc exec $HA_PROXY -- bash -c "echo '$HA_EXT_IP ssi.local' >> /etc/hosts"
 lxc exec $HA_PROXY -- bash -c "echo '$HA_EXT_IP gil.local' >> /etc/hosts"
 
+echo "Configuration DNS pour résolution externe..."
+for server in $WEB_SERVERS $WAFS; do  # servers needing Docker/internet
+    lxc exec $server -- bash -c "echo '[Resolve]' > /etc/systemd/resolved.conf"
+    lxc exec $server -- bash -c "echo 'DNS=8.8.8.8 8.8.4.4' >> /etc/systemd/resolved.conf"
+    lxc exec $server -- bash -c "echo 'FallbackDNS=1.1.1.1' >> /etc/systemd/resolved.conf"
+    lxc exec $server -- systemctl restart systemd-resolved
+done
+
+
 echo "Configuration du routage..."
 # IP forwarding on WAFs
 for server in $WAFS; do
     lxc exec $server -- sysctl -w net.ipv4.ip_forward=1 >& /dev/null
 done
-
+echo "Configuration du routage internet pour accès externe..."
+lxc exec $HA_PROXY -- sysctl -w net.ipv4.ip_forward=1 >& /dev/null
+for server in $WAFS; do
+    lxc exec $server -- ip route add default via 20.0.0.1 dev eth0 || true
+done
 # Default routes for web servers
 lxc exec $WEB1 -- ip route add default via 192.168.1.1 dev eth0 || true
 lxc exec $WEB2 -- ip route add default via 192.168.1.1 dev eth0 || true
