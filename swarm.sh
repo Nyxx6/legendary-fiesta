@@ -549,11 +549,15 @@ lxc exec $HA_PROXY -- bash -c "echo '$HA_EXT_IP ssi.local' >> /etc/hosts"
 lxc exec $HA_PROXY -- bash -c "echo '$HA_EXT_IP gil.local' >> /etc/hosts"
 
 echo "Configuration DNS pour résolution externe..."
-for server in $WEB_SERVERS $WAFS; do  # servers needing Docker/internet
+for server in $WEB_SERVERS $WAFS $HA_PROXY; do
+    lxc exec $server -- bash -c "mkdir -p /etc/systemd" || true
     lxc exec $server -- bash -c "echo '[Resolve]' > /etc/systemd/resolved.conf"
-    lxc exec $server -- bash -c "echo 'DNS=8.8.8.8 8.8.4.4' >> /etc/systemd/resolved.conf"
-    lxc exec $server -- bash -c "echo 'FallbackDNS=1.1.1.1' >> /etc/systemd/resolved.conf"
+    lxc exec $server -- bash -c "echo 'DNS=8.8.8.8 8.8.4.4 1.1.1.1' >> /etc/systemd/resolved.conf"
+    lxc exec $server -- bash -c "echo 'FallbackDNS=9.9.9.9' >> /etc/systemd/resolved.conf"
+    lxc exec $server -- bash -c "echo 'Domains=~.' >> /etc/systemd/resolved.conf"  # Optional: search all domains
+    lxc exec $server -- bash -c "echo 'Cache=yes' >> /etc/systemd/resolved.conf"
     lxc exec $server -- systemctl restart systemd-resolved
+    lxc exec $server -- ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf || true
 done
 
 
@@ -564,9 +568,15 @@ for server in $WAFS; do
 done
 echo "Configuration du routage internet pour accès externe..."
 lxc exec $HA_PROXY -- sysctl -w net.ipv4.ip_forward=1 >& /dev/null
+lxc exec $HA_PROXY -- bash -c "echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf" && lxc exec $HA_PROXY -- sysctl -p
 for server in $WAFS; do
     lxc exec $server -- ip route add default via 20.0.0.1 dev eth0 || true
 done
+# Verify: Add test pings (optional, remove after testing)
+for server in $WEB_SERVERS; do
+    lxc exec $server -- ping -c 3 8.8.8.8 && lxc exec $server -- nslookup registry-1.docker.io
+done
+
 # Default routes for web servers
 lxc exec $WEB1 -- ip route add default via 192.168.1.1 dev eth0 || true
 lxc exec $WEB2 -- ip route add default via 192.168.1.1 dev eth0 || true
