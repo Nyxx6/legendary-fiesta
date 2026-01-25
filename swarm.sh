@@ -503,6 +503,19 @@ for net in $NETS; do
                             --type bridge >& /dev/null || true
 done
 
+
+echo "Construction de l'image Docker personnalisée sur les nœuds Swarm..."
+for server in $WEB_SERVERS; do
+    push_file Dockerfile $server /root/Dockerfile || { echo "Failed to push Dockerfile to $server"; exit 1; }
+    push_file nginx-web.conf $server /root/nginx-web.conf || { echo "Failed to push nginx-web.conf to $server"; exit 1; }
+    push_file ssi.conf $server /root/ssi.conf || { echo "Failed to push ssi.conf to $server"; exit 1; }
+    push_file gil.conf $server /root/gil.conf || { echo "Failed to push gil.conf to $server"; exit 1; }
+    push_file index-ssi.html $server /root/index-ssi.html || { echo "Failed to push index-ssi.html to $server"; exit 1; }
+    push_file index-gil.html $server /root/index-gil.html || { echo "Failed to push index-gil.html to $server"; exit 1; }
+    lxc exec $server -- docker build -t custom-nginx /root || { echo "Docker build failed on $server"; exit 1; }
+done
+
+
 echo "Configuration des interfaces réseau..."
 
 # Redis network
@@ -572,26 +585,11 @@ lxc exec $HA_PROXY -- bash -c "echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf"
 for server in $WAFS; do
     lxc exec $server -- ip route add default via 20.0.0.1 dev eth0 || true
 done
-# Verify: Add test pings (optional, remove after testing)
-for server in $WEB_SERVERS; do
-    lxc exec $server -- ping -c 3 8.8.8.8 && lxc exec $server -- nslookup registry-1.docker.io
-done
 
 # Default routes for web servers
 lxc exec $WEB1 -- ip route add default via 192.168.1.1 dev eth0 || true
 lxc exec $WEB2 -- ip route add default via 192.168.1.1 dev eth0 || true
 lxc exec $WEB3 -- ip route add default via 192.168.1.2 dev eth0 || true
-
-echo "Construction de l'image Docker personnalisée sur les nœuds Swarm..."
-for server in $WEB_SERVERS; do
-    push_file Dockerfile $server /root/Dockerfile || { echo "Failed to push Dockerfile to $server"; exit 1; }
-    push_file nginx-web.conf $server /root/nginx-web.conf || { echo "Failed to push nginx-web.conf to $server"; exit 1; }
-    push_file ssi.conf $server /root/ssi.conf || { echo "Failed to push ssi.conf to $server"; exit 1; }
-    push_file gil.conf $server /root/gil.conf || { echo "Failed to push gil.conf to $server"; exit 1; }
-    push_file index-ssi.html $server /root/index-ssi.html || { echo "Failed to push index-ssi.html to $server"; exit 1; }
-    push_file index-gil.html $server /root/index-gil.html || { echo "Failed to push index-gil.html to $server"; exit 1; }
-    lxc exec $server -- docker build -t custom-nginx /root || { echo "Docker build failed on $server"; exit 1; }
-done
 
 echo "Configuration de Docker Swarm..."
 lxc exec $WEB1 -- docker swarm init --advertise-addr 192.168.1.3
