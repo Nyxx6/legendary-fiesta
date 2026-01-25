@@ -127,16 +127,8 @@ http {
     set_real_ip_from 20.0.0.0/24;
     real_ip_header X-Real-IP;
 
-    upstream web_ssi {
-        server 192.168.1.3:80;
-        server 192.168.1.4:80;
-        server 192.168.1.5:80;
-    }
-    upstream web_gil {
-        server 192.168.1.3:80;
-        server 192.168.1.4:80;
-        server 192.168.1.5:80;
-    }
+    upstream web_ssi { server 192.168.1.3:80; server 192.168.1.4:80; server 192.168.1.5:80; }
+    upstream web_gil { server 192.168.1.3:80; server 192.168.1.4:80; server 192.168.1.5:80; }
 
     server {
         listen 80;
@@ -144,12 +136,8 @@ http {
         modsecurity_rules_file /etc/nginx/modsec/main.conf;
 
         location / {
-            if ($http_host = "healthcheck") {
-                return 200 "OK\n";
-            }
-            if ($host = "ssi.local") {
-                proxy_pass http://web_ssi;
-            }
+            if ($http_host = "healthcheck") { return 200 "OK\n"; }
+            if ($host = "ssi.local") { proxy_pass http://web_ssi; }
             proxy_pass http://web_gil;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
@@ -178,34 +166,22 @@ http {
 EOF
 
 cat > ssi.conf << 'EOF'
-server {
-    listen 80;
-    server_name ssi.local;
-    root /var/www/ssi;
-    index index.html;
-    location / { try_files $uri $uri/ =404; }
-}
+server { listen 80; server_name ssi.local; root /var/www/ssi; index index.html;
+         location / { try_files $uri $uri/ =404; } }
 EOF
 
 cat > gil.conf << 'EOF'
-server {
-    listen 80;
-    server_name gil.local;
-    root /var/www/gil;
-    index index.html;
-    location / { try_files $uri $uri/ =404; }
-}
+server { listen 80; server_name gil.local; root /var/www/gil; index index.html;
+         location / { try_files $uri $uri/ =404; } }
 EOF
 
 cat > index-ssi.html << 'EOF'
-<!DOCTYPE html>
-<html lang="fr"><head><meta charset="UTF-8"><title>SSI Website</title></head>
+<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>SSI</title></head>
 <body><h1>Site SSI</h1><p>Bienvenue sur le site SSI</p><p>Serveur: Nginx in Docker Swarm</p></body></html>
 EOF
 
 cat > index-gil.html << 'EOF'
-<!DOCTYPE html>
-<html lang="fr"><head><meta charset="UTF-8"><title>GIL Website</title></head>
+<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>GIL</title></head>
 <body><h1>Site GIL</h1><p>Bienvenue sur le site GIL</p><p>Serveur: Nginx in Docker Swarm</p></body></html>
 EOF
 
@@ -243,59 +219,70 @@ echo "Création des conteneurs..."
 for server in $WEB_SERVERS $WAFS $HA_PROXY $REDIS; do
     lxc launch ubuntu:24.04 $server -q
 done
-
 sleep 8
 
-echo "Synchronisation de l'heure..."
+echo "Synchronisation de l'heure et configuration LXD pour Docker..."
 for ct in $WEB_SERVERS $WAFS $HA_PROXY $REDIS; do
     lxc exec $ct -- bash -c "timedatectl set-ntp true && hwclock --systohc && systemctl restart systemd-timesyncd 2>/dev/null || true"
 done
-
-echo "Configuration LXD pour Docker (nesting)..."
 for ct in $WEB_SERVERS; do
     lxc config set $ct security.nesting=true
     lxc config set $ct security.syscalls.intercept.mknod=true
     lxc config set $ct security.syscalls.intercept.setxattr=true
     lxc config set $ct security.syscalls.intercept.mount=true
 done
-
-echo "Redémarrage des nœuds Swarm..."
 for ct in $WEB_SERVERS; do
     lxc restart $ct --force
 done
 sleep 12
 
-echo "Installation des paquets..."
+echo "Installation des paquets (haproxy installé avant SSL)..."
 for server in $WEB_SERVERS; do
     lxc exec $server -- bash -c "apt-get update && DEBIAN_FRONTEND=noninteractive apt install -y docker.io"
     lxc exec $server -- systemctl enable --now docker
 done
-
 for server in $WAFS; do
     lxc exec $server -- bash -c "apt-get update && DEBIAN_FRONTEND=noninteractive apt install -y nginx libnginx-mod-http-modsecurity modsecurity-crs"
     lxc exec $server -- rm -f /etc/nginx/sites-enabled/default
 done
+lxc exec $HA_PROXY -- bash -c "apt-get update && DEBIAN_FRONTEND=noninteractive apt install -y haproxy"
+lxc exec $REDIS -- bash -c "apt-get update && DEBIAN_FRONTEND=noninteractive apt install -y redis-server"
 
-lxc exec $REDIS -- apt-get update && DEBIAN_FRONTEND=noninteractive apt install -y redis-server
-lxc exec $HA_PROXY -- apt-get update && DEBIAN_FRONTEND=noninteractive apt install -y haproxy
+echo "=== Configuration du registre local Docker ==="
+lxc exec $WEB1 -- docker run -d -p 5000:5000 --restart=always --name registry registry:2
 
-echo "Construction de l'image Docker personnalisée (avant perte d'internet)..."
 for server in $WEB_SERVERS; do
-    push_file Dockerfile $server /root/Dockerfile
-    push_file nginx-web.conf $server /root/nginx-web.conf
-    push_file ssi.conf $server /root/ssi.conf
-    push_file gil.conf $server /root/gil.conf
-    push_file index-ssi.html $server /root/index-ssi.html
-    push_file index-gil.html $server /root/index-gil.html
-    lxc exec $server -- docker build -t custom-nginx /root
+    lxc exec $server -- bash -c '
+        mkdir -p /etc/docker
+        cat > /etc/docker/daemon.json <<EOF
+{ "insecure-registries": ["192.168.1.3:5000"] }
+EOF
+        systemctl restart docker
+    '
 done
+sleep 5
 
-echo "Configuration des réseaux internes..."
+echo "=== Construction et push vers registre local (seulement sur web1) ==="
+push_file Dockerfile $WEB1 /root/Dockerfile
+push_file nginx-web.conf $WEB1 /root/nginx-web.conf
+push_file ssi.conf $WEB1 /root/ssi.conf
+push_file gil.conf $WEB1 /root/gil.conf
+push_file index-ssi.html $WEB1 /root/index-ssi.html
+push_file index-gil.html $WEB1 /root/index-gil.html
+
+lxc exec $WEB1 -- docker build -t custom-nginx /root
+lxc exec $WEB1 -- docker tag custom-nginx:latest 192.168.1.3:5000/custom-nginx:latest
+lxc exec $WEB1 -- docker push 192.168.1.3:5000/custom-nginx:latest
+
+echo "=== Pull sur les workers ==="
+lxc exec $WEB2 -- docker pull 192.168.1.3:5000/custom-nginx:latest
+lxc exec $WEB3 -- docker pull 192.168.1.3:5000/custom-nginx:latest
+
+echo "Configuration des réseaux..."
 for net in $NETS; do
     lxc network create $net ipv4.dhcp=false ipv6.dhcp=false ipv4.nat=false ipv6.nat=false --type bridge || true
 done
 
-# Attach networks and configure IPs
 lxc network attach $REDIS_NET $REDIS eth0
 lxc exec $REDIS -- ip addr flush dev eth0
 
@@ -334,19 +321,24 @@ lxc exec $WEB1 -- ip route add default via 192.168.1.1 dev eth0 || true
 lxc exec $WEB2 -- ip route add default via 192.168.1.1 dev eth0 || true
 lxc exec $WEB3 -- ip route add default via 192.168.1.2 dev eth0 || true
 
-echo "Configuration Docker Swarm..."
+echo "Initialisation Docker Swarm..."
 lxc exec $WEB1 -- docker swarm init --advertise-addr 192.168.1.3
 TOKEN=$(lxc exec $WEB1 -- docker swarm join-token worker -q)
 lxc exec $WEB2 -- docker swarm join --token $TOKEN 192.168.1.3:2377
 lxc exec $WEB3 -- docker swarm join --token $TOKEN 192.168.1.3:2377
-lxc exec $WEB1 -- docker service create --name webapp --replicas 3 --publish published=80,target=80 custom-nginx
 
-echo "Configuration HAProxy et WAFs..."
+echo "Création du service Swarm depuis le registre..."
+lxc exec $WEB1 -- docker service create --name webapp --replicas 3 --publish published=80,target=80 192.168.1.3:5000/custom-nginx:latest
+
+echo "Configuration HAProxy (SSL après installation haproxy)..."
 lxc exec $HA_PROXY -- mkdir -p /etc/ssl/private
 push_file ssl_certs/haproxy-ecdsa.pem $HA_PROXY /etc/ssl/private/haproxy-ecdsa.pem
 push_file ssl_certs/haproxy-rsa.pem $HA_PROXY /etc/ssl/private/haproxy-rsa.pem
 push_file haproxy.cfg $HA_PROXY /etc/haproxy/haproxy.cfg
 lxc exec $HA_PROXY -- chown -R haproxy:haproxy /etc/ssl/private
+lxc exec $HA_PROXY -- chmod 600 /etc/ssl/private/haproxy-*.pem
+
+echo "Configuration WAFs..."
 push_file nginx-waf.conf $WAF1 /etc/nginx/nginx.conf
 push_file nginx-waf.conf $WAF2 /etc/nginx/nginx.conf
 
@@ -376,6 +368,8 @@ done
 
 echo ""
 echo "====== Infrastructure déployée avec succès ======"
+echo "Registry: http://192.168.1.3:5000"
+echo "Image: 192.168.1.3:5000/custom-nginx:latest"
 echo "Test: curl -k https://ssi.local"
 echo "      curl -k https://gil.local"
 echo "Pour supprimer: $0 -d"
