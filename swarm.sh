@@ -43,14 +43,12 @@ DELETE_ALL=0
 WEB1="web1" WEB2="web2" WEB3="web3"
 WAF1="waf1" WAF2="waf2"
 HA_PROXY="haproxy"
-REDIS="redis"
 WAFS="$WAF1 $WAF2"
 WEB_SERVERS="$WEB1 $WEB2 $WEB3"
 
 BACK_NET="back_net"
 WAF_NET="waf_net"
-REDIS_NET="redis_net"
-NETS="$BACK_NET $WAF_NET $REDIS_NET"
+NETS="$BACK_NET $WAF_NET"
 
 while getopts "drh" opt; do
     case ${opt} in
@@ -62,7 +60,7 @@ done
 
 if [ $DELETE_ALL -eq 1 ]; then
     echo "Suppression de l'architecture..."
-    for server in $WEB_SERVERS $HA_PROXY $WAFS $REDIS; do
+    for server in $WEB_SERVERS $HA_PROXY $WAFS; do
         lxc delete $server --force || true
     done
     for net in $NETS; do
@@ -216,13 +214,13 @@ openssl x509 -req -days 365 -in ssl_certs/haproxy-rsa.csr -CA ssl_certs/ca.pem -
 cat ssl_certs/haproxy-rsa-cert.pem ssl_certs/haproxy-rsa-key.pem > ssl_certs/haproxy-rsa.pem
 
 echo "Création des conteneurs..."
-for server in $WEB_SERVERS $WAFS $HA_PROXY $REDIS; do
+for server in $WEB_SERVERS $WAFS $HA_PROXY; do
     lxc launch ubuntu:24.04 $server -q
 done
 sleep 8
 
 echo "Synchronisation de l'heure et configuration LXD pour Docker..."
-for ct in $WEB_SERVERS $WAFS $HA_PROXY $REDIS; do
+for ct in $WEB_SERVERS $WAFS $HA_PROXY; do
     lxc exec $ct -- bash -c "timedatectl set-ntp true && hwclock --systohc && systemctl restart systemd-timesyncd 2>/dev/null || true"
 done
 for ct in $WEB_SERVERS; do
@@ -246,30 +244,11 @@ for server in $WAFS; do
     lxc exec $server -- rm -f /etc/nginx/sites-enabled/default
 done
 lxc exec $HA_PROXY -- bash -c "apt-get update && DEBIAN_FRONTEND=noninteractive apt install -y haproxy"
-lxc exec $REDIS -- bash -c "apt-get update && DEBIAN_FRONTEND=noninteractive apt install -y redis-server"
 
 echo "=== Configuration du registre local Docker ==="
 lxc exec $WEB1 -- docker run -d -p 5000:5000 --restart=always --name registry registry:2
+sleep 8
 
-for server in $WEB_SERVERS; do
-    lxc exec $server -- bash -c '
-        mkdir -p /etc/docker
-        cat > /etc/docker/daemon.json <<EOF
-{ "insecure-registries": ["192.168.1.3:5000"] }
-EOF
-        systemctl restart docker
-    '
-done
-sleep 5
-
-echo "=== Configuration du registre local Docker ==="
-
-# Start registry on web1
-lxc exec $WEB1 -- docker run -d -p 5000:5000 --restart=always --name registry registry:2
-
-sleep 8   # Give registry time to fully start
-
-# Configure insecure registry on all nodes
 for server in $WEB_SERVERS; do
     lxc exec $server -- bash -c '
         mkdir -p /etc/docker
@@ -315,11 +294,8 @@ for net in $NETS; do
     lxc network create $net ipv4.dhcp=false ipv6.dhcp=false ipv4.nat=false ipv6.nat=false --type bridge || true
 done
 
-lxc network attach $REDIS_NET $REDIS eth0
-lxc exec $REDIS -- ip addr flush dev eth0
-
 for server in $WEB_SERVERS; do
-    lxc config device add $server eth1 nic nictype=bridged parent=$REDIS_NET || true
+    lxc config device add $server eth1 nic nictype=bridged parent=$BACK_NET || true
     lxc exec $server -- ip link set dev eth1 up
     lxc network attach $BACK_NET $server eth0
     lxc exec $server -- ip addr flush dev eth0
@@ -377,15 +353,6 @@ for server in $WAFS; do
     lxc exec $server -- bash -c 'echo "Include /usr/share/modsecurity-crs/owasp-crs.load" >> /etc/nginx/modsec/main.conf'
 done
 
-echo "Configuration Redis..."
-REDIS_PASS=$(openssl rand -base64 24)
-lxc exec $REDIS -- bash -c "
-    sed -i 's/bind 127.0.0.1 ::1/bind 30.0.0.1/' /etc/redis/redis.conf
-    echo 'requirepass $REDIS_PASS' >> /etc/redis/redis.conf
-    systemctl restart redis
-"
-echo "Redis password: $REDIS_PASS"
-
 echo "Redémarrage des services..."
 lxc exec $HA_PROXY -- systemctl restart haproxy
 for n in $WAFS; do
@@ -396,6 +363,7 @@ echo ""
 echo "====== Infrastructure déployée avec succès ======"
 echo "Registry: http://192.168.1.3:5000"
 echo "Image: 192.168.1.3:5000/custom-nginx:latest"
+echo "Add to /etc/hosts: 20.0.0.1 ssi.local gil.local"
 echo "Test: curl -k https://ssi.local"
 echo "      curl -k https://gil.local"
 echo "Pour supprimer: $0 -d"
