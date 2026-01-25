@@ -262,7 +262,30 @@ EOF
 done
 sleep 5
 
-echo "=== Construction et push vers registre local (seulement sur web1) ==="
+echo "=== Configuration du registre local Docker ==="
+
+# Start registry on web1
+lxc exec $WEB1 -- docker run -d -p 5000:5000 --restart=always --name registry registry:2
+
+sleep 8   # Give registry time to fully start
+
+# Configure insecure registry on all nodes
+for server in $WEB_SERVERS; do
+    lxc exec $server -- bash -c '
+        mkdir -p /etc/docker
+        cat > /etc/docker/daemon.json <<EOF
+{
+  "insecure-registries": ["registry:5000", "192.168.1.3:5000"]
+}
+EOF
+        systemctl restart docker
+    '
+done
+
+sleep 5
+
+echo "=== Build & push vers registre local (utilise registry:5000) ==="
+# Build on web1
 push_file Dockerfile $WEB1 /root/Dockerfile
 push_file nginx-web.conf $WEB1 /root/nginx-web.conf
 push_file ssi.conf $WEB1 /root/ssi.conf
@@ -271,12 +294,21 @@ push_file index-ssi.html $WEB1 /root/index-ssi.html
 push_file index-gil.html $WEB1 /root/index-gil.html
 
 lxc exec $WEB1 -- docker build -t custom-nginx /root
-lxc exec $WEB1 -- docker tag custom-nginx:latest 192.168.1.3:5000/custom-nginx:latest
-lxc exec $WEB1 -- docker push 192.168.1.3:5000/custom-nginx:latest
+lxc exec $WEB1 -- docker tag custom-nginx:latest registry:5000/custom-nginx:latest
+lxc exec $WEB1 -- docker push registry:5000/custom-nginx:latest
 
 echo "=== Pull sur les workers ==="
-lxc exec $WEB2 -- docker pull 192.168.1.3:5000/custom-nginx:latest
-lxc exec $WEB3 -- docker pull 192.168.1.3:5000/custom-nginx:latest
+lxc exec $WEB2 -- docker pull registry:5000/custom-nginx:latest
+lxc exec $WEB3 -- docker pull registry:5000/custom-nginx:latest
+
+echo "Initialisation Docker Swarm..."
+lxc exec $WEB1 -- docker swarm init --advertise-addr 192.168.1.3
+TOKEN=$(lxc exec $WEB1 -- docker swarm join-token worker -q)
+lxc exec $WEB2 -- docker swarm join --token $TOKEN 192.168.1.3:2377
+lxc exec $WEB3 -- docker swarm join --token $TOKEN 192.168.1.3:2377
+
+echo "=== Création du service Swarm ==="
+lxc exec $WEB1 -- docker service create --name webapp --replicas 3 --publish published=80,target=80 registry:5000/custom-nginx:latest
 
 echo "Configuration des réseaux..."
 for net in $NETS; do
@@ -321,14 +353,8 @@ lxc exec $WEB1 -- ip route add default via 192.168.1.1 dev eth0 || true
 lxc exec $WEB2 -- ip route add default via 192.168.1.1 dev eth0 || true
 lxc exec $WEB3 -- ip route add default via 192.168.1.2 dev eth0 || true
 
-echo "Initialisation Docker Swarm..."
-lxc exec $WEB1 -- docker swarm init --advertise-addr 192.168.1.3
-TOKEN=$(lxc exec $WEB1 -- docker swarm join-token worker -q)
-lxc exec $WEB2 -- docker swarm join --token $TOKEN 192.168.1.3:2377
-lxc exec $WEB3 -- docker swarm join --token $TOKEN 192.168.1.3:2377
 
-echo "Création du service Swarm depuis le registre..."
-lxc exec $WEB1 -- docker service create --name webapp --replicas 3 --publish published=80,target=80 192.168.1.3:5000/custom-nginx:latest
+
 
 echo "Configuration HAProxy (SSL après installation haproxy)..."
 lxc exec $HA_PROXY -- mkdir -p /etc/ssl/private
