@@ -461,6 +461,15 @@ check_container_ready() {
 	done
 	return 1
 }
+echo "Synchronizing time in all containers..."
+for server in $WEB_SERVERS $WAFS $HA_PROXY $REDIS; do
+    lxc exec $server -- bash -c "
+        timedatectl set-ntp true
+        hwclock --systohc
+        systemctl restart systemd-timesyncd || true
+        sleep 3
+    "
+done
 
 for server in $WEB_SERVERS $REDIS $HA_PROXY $WAFS; do
 	echo "  Waiting for $server to be reachable..."
