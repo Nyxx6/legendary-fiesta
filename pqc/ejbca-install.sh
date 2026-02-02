@@ -3,84 +3,45 @@ mkdir -p ~/ejbca-test && cd ~/ejbca-test
 # docker-compose.yml
 cat > docker-compose.yml << 'EOF'
 services:
-  ejbca-db:
+  db:
     image: mariadb:10.11
     container_name: ejbca-db
-    restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_ROOT_PASSWORD: rootpass
       MYSQL_DATABASE: ejbca
       MYSQL_USER: ejbca
-      MYSQL_PASSWORD: ejbcapassword
+      MYSQL_PASSWORD: ejbcapass
     volumes:
-      - ejbca-db-data:/var/lib/mysql
+      - db-data:/var/lib/mysql
     networks:
-      - ejbca-net
+      - internal
 
   ejbca:
     image: keyfactor/ejbca-ce:latest
-    container_name: ejbca-ce
-    restart: unless-stopped
+    container_name: ejbca
     depends_on:
-      - ejbca-db
+      - db
     environment:
-      # Database connection (MariaDB)
-      DATABASE_JDBC_URL: jdbc:mariadb://ejbca-db:3306/ejbca?characterEncoding=utf-8
+      DATABASE_JDBC_URL: jdbc:mariadb://db:3306/ejbca?characterEncoding=utf-8
       DATABASE_USER: ejbca
-      DATABASE_PASSWORD: ejbcapassword
-
-      # TLS setup: "true" = generate self-signed cert + superadmin cert
-      TLS_SETUP_ENABLED: "true"
-
-      # Hostname for generated TLS cert
+      DATABASE_PASSWORD: ejbcapass
+      TLS_SETUP_ENABLED: "simple"
       HTTPSERVER_HOSTNAME: localhost
-
-      # Optional: password for encryption (change in production!)
-      PASSWORD_ENCRYPTION_KEY: changeme1234567890
-
-      # Superadmin access (printed in logs on first start)
-      EJBCA_CLI_DEFAULTPASSWORD: ejbca
-
+      PASSWORD_ENCRYPTION_KEY: ejbca123456
     ports:
-      - "8080:8080"   # HTTP (for initial access)
-      - "8443:8443"   # HTTPS Admin GUI
+      - "8080:8080"
+      - "8443:8443"
     volumes:
-      - ejbca-persistent:/mnt/persistent
+      - ejbca-data:/mnt/persistent
     networks:
-      - ejbca-net
-
-  serles-acme:
-    image: joepitt91/serles-acme-docker:latest   # Or build from joepitt91 repo if needed
-    container_name: serles-acme
-    restart: unless-stopped
-    depends_on:
-      - ejbca
-    environment:
-      # EJBCA Web Service API URL (internal network)
-      EJBCA_API: https://ejbca:8443/ejbca/ejbcaws/ejbcaws?wsdl
-      EJBCA_API_VERIFY: "false"   # Skip TLS verify (self-signed in test)
-
-      # EJBCA CA/Profile names (create them in EJBCA first!)
-      CA_NAME: ManagementCA
-      CERT_PROFILE: SERVER
-      ENTITY_PROFILE: EMPTY
-
-      # Allowed IPs for ACME requests (0.0.0.0/0 for test)
-      ALLOWED_IPS: 0.0.0.0/0,::/0
-
-    ports:
-      - "80:80"   # ACME HTTP (behind reverse proxy in prod)
-    volumes:
-      - ./serles-client.pem:/app/client.pem:ro   # Mount your EJBCA client cert+key
-    networks:
-      - ejbca-net
+      - internal
 
 volumes:
-  ejbca-db-data:
-  ejbca-persistent:
+  db-data:
+  ejbca-data:
 
 networks:
-  ejbca-net:
+  internal:
     driver: bridge
 EOF
 
