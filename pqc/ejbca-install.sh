@@ -47,4 +47,8 @@ EOF
 
 docker compose up -d
 docker compose logs -f ejbca
-docker compose logs -f serles-acme
+
+# create superadmin profile, generate certificate and import it in browser.
+# restart ejbca
+# the management ca is for internal trust between ejbca services
+# create CAs and generate certificate for acme
