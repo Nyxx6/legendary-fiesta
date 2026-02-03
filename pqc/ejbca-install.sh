@@ -7,10 +7,10 @@ services:
     image: mariadb:10.11
     container_name: ejbca-db
     environment:
-      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_ROOT_PASSWORD: rootpassword
       MYSQL_DATABASE: ejbca
       MYSQL_USER: ejbca
-      MYSQL_PASSWORD: ejbcapass
+      MYSQL_PASSWORD: ejbcapassword
     volumes:
       - db-data:/var/lib/mysql
     networks:
@@ -18,16 +18,18 @@ services:
 
   ejbca:
     image: keyfactor/ejbca-ce:latest
-    container_name: ejbca
+    container_name: ejbca-ce
     depends_on:
       - db
     environment:
       DATABASE_JDBC_URL: jdbc:mariadb://db:3306/ejbca?characterEncoding=utf-8
       DATABASE_USER: ejbca
-      DATABASE_PASSWORD: ejbcapass
+      DATABASE_PASSWORD: ejbcapassword
+
       TLS_SETUP_ENABLED: "simple"
-      HTTPSERVER_HOSTNAME: localhost
-      PASSWORD_ENCRYPTION_KEY: ejbca123456
+      LOG_LEVEL_APP: INFO
+      LOG_LEVEL_SERVER: INFO
+
     ports:
       - "8080:8080"
       - "8443:8443"
