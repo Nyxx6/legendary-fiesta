@@ -98,26 +98,11 @@ objFile.WriteLine "EnableVirtualization: " & SafeRegRead("HKLM\SOFTWARE\Microsof
 ' 10. DOSSIERS PARTAGES
 ' ==========================================
 WriteTitle "10. DOSSIERS PARTAGES & PERMISSIONS"
-Dim objShares, objShare, objExec, strCommand, strOutput
+Dim objShares, objShare
 Set objShares = objWMIService.ExecQuery("Select * from Win32_Share")
 For Each objShare in objShares
-    objFile.WriteLine "Partage: " & objShare.Name
-    objFile.WriteLine "  Chemin: " & objShare.Path
-    objFile.WriteLine "  Description: " & objShare.Description
-
-    ' Get the file permissions for the shared folder using PowerShell
-    strCommand = "powershell.exe -Command Get-Acl """ & objShare.Path & """ | Select-Object -ExpandProperty Access"
-    Set objExec = objShell.Exec(strCommand)
-
-    strOutput = ""
-    Do While Not objExec.StdOut.AtEndOfStream
-        strOutput = strOutput & objExec.StdOut.ReadLine() & vbCrLf
-    Loop
-
-    If Len(strOutput) > 0 Then
-        objFile.WriteLine "  Permissions:"
-        objFile.WriteLine strOutput
-    End If
+    objFile.WriteLine "Partage: " & objShare.Name & " | Chemin: " & objShare.Path
+    objFile.WriteLine "   Desc: " & objShare.Description
 Next
 
 ' ==========================================
@@ -142,7 +127,7 @@ WriteTitle "12. UTILISATEURS LOCAUX"
 Dim objUsers, objUser
 Set objUsers = objWMIService.ExecQuery("Select * from Win32_UserAccount where LocalAccount=true")
 For Each objUser in objUsers
-    objFile.WriteLine "Utilisateur: " & objUser.Name & " | Désactivé: " & objUser.Disabled
+    objFile.WriteLine "User: " & objUser.Name & " | Désactivé: " & objUser.Disabled
 Next
 
 WriteTitle "12 (bis). GROUPES LOCAUX"
@@ -150,8 +135,6 @@ Dim objGroups, objGroup
 Set objGroups = objWMIService.ExecQuery("Select * from Win32_Group where LocalAccount=true")
 For Each objGroup in objGroups
     objFile.WriteLine "Groupe: " & objGroup.Name
-    objFile.WriteLine "Description: " & objGroup.Description
-    objFile.WriteLine "SID: " & objGroup.SID
 Next
 
 ' ==========================================
@@ -171,121 +154,8 @@ Else
 End If
 On Error Goto 0
 
-' ==========================================
-' 14. IIS CONFIGURATION
-' ==========================================
-WriteTitle "14. IIS - VERSION & STATUS"
-RunCommandAndLog "reg query ""HKLM\SOFTWARE\Microsoft\InetStp"" /v VersionString"
-RunCommandAndLog "iisreset /status"
-
-WriteTitle "14A. IIS - SITES WEB"
-RunCommandAndLog "powershell.exe -Command ""Import-Module WebAdministration; Get-Website | Select-Object Name, ID, State, PhysicalPath, @{N='Bindings';E={($_.Bindings.Collection | ForEach-Object {$_.protocol + '://' + $_.bindingInformation}) -join ', '}} | Format-List"""
-
-WriteTitle "14B. IIS - APPLICATION POOLS"
-RunCommandAndLog "powershell.exe -Command ""Import-Module WebAdministration; Get-IISAppPool | Select-Object Name, State, ManagedRuntimeVersion, ManagedPipelineMode, @{N='Identity';E={$_.ProcessModel.IdentityType}} | Format-List"""
-
-WriteTitle "14C. IIS - CERTIFICATS SSL"
-RunCommandAndLog "powershell.exe -Command ""Get-ChildItem Cert:\LocalMachine\My | Where-Object {$_.HasPrivateKey} | Select-Object Subject, Thumbprint, NotAfter, @{N='DaysRemaining';E={($_.NotAfter - (Get-Date)).Days}} | Format-List"""
-
-WriteTitle "14D. IIS - MODULES INSTALLES"
-RunCommandAndLog "powershell.exe -Command ""Get-WebGlobalModule | Select-Object Name, Image | Format-Table -AutoSize"""
-
-' ==========================================
-' 15. CONNEXIONS RESEAU ACTIVES
-' ==========================================
-WriteTitle "15. CONNEXIONS ETABLIES"
-RunCommandAndLog "netstat -ano | find ""ESTABLISHED"""
-
-' ==========================================
-' 16. PROCESSUS EN COURS
-' ==========================================
-WriteTitle "16. PROCESSUS CRITIQUES"
-Dim colProcesses, objProcess
-Set colProcesses = objWMIService.ExecQuery("Select Name, ProcessId, ExecutablePath from Win32_Process Where Name='w3wp.exe' OR Name='svchost.exe' OR Name='sqlservr.exe'")
-For Each objProcess in colProcesses
-    objFile.WriteLine "PID: " & objProcess.ProcessId & " | " & objProcess.Name & " | " & objProcess.ExecutablePath
-Next
-
-' ==========================================
-' 17. TACHES PLANIFIEES
-' ==========================================
-WriteTitle "17. TACHES PLANIFIEES"
-RunCommandAndLog "schtasks /query /fo LIST /v"
-
-' ==========================================
-' 18. MEMBRES GROUPE ADMINISTRATEURS
-' ==========================================
-WriteTitle "18. MEMBRES GROUPE ADMINISTRATEURS"
-RunCommandAndLog "net localgroup Administrateurs"
-RunCommandAndLog "net localgroup Administrators"
-
-' ==========================================
-' 19. ANTIVIRUS & DEFENDER
-' ==========================================
-WriteTitle "19A. WINDOWS DEFENDER STATUS"
-On Error Resume Next
-RunCommandAndLog "powershell.exe -Command ""Get-MpComputerStatus | Select-Object AntivirusEnabled, RealTimeProtectionEnabled, AntivirusSignatureLastUpdated | Format-List"""
-On Error Goto 0
-
-WriteTitle "19B. ANTIVIRUS INSTALLES"
-On Error Resume Next
-Dim avFound
-avFound = False
-
-If Not avFound Or Err.Number <> 0 Then
-    Err.Clear
-    objFile.WriteLine "Vérification via services antivirus courants:"
-    
-    Dim colAVServices, objAVService
-    Set colAVServices = objWMIService.ExecQuery("Select DisplayName, State from Win32_Service Where DisplayName LIKE '%antivirus%' OR DisplayName LIKE '%defender%' OR DisplayName LIKE '%symantec%' OR DisplayName LIKE '%mcafee%' OR DisplayName LIKE '%kaspersky%' OR DisplayName LIKE '%avast%' OR DisplayName LIKE '%avg%'")
-    
-    If colAVServices.Count > 0 Then
-        For Each objAVService in colAVServices
-            objFile.WriteLine "  Service: " & objAVService.DisplayName & " - Etat: " & objAVService.State
-        Next
-    Else
-        objFile.WriteLine "  Aucun service antivirus détecté"
-    End If
-End If
-
-On Error Goto 0
-
-' ==========================================
-' 20. ECHECS CONNEXION RECENTS
-' ==========================================
-WriteTitle "20. ECHECS DE CONNEXION (Security Log)"
-RunCommandAndLog "powershell.exe -Command ""Get-EventLog -LogName Security -InstanceId 4625 -Newest 20 | Select-Object TimeGenerated, Message | Format-List"""
-
-' ==========================================
-' 21. CONFIGURATION RESEAU
-' ==========================================
-WriteTitle "21. CONFIGURATION IP"
-RunCommandAndLog "ipconfig /all"
-
-' ==========================================
-' 22. ESPACE DISQUE
-' ==========================================
-WriteTitle "22. ESPACE DISQUE"
-Dim colDisks, objDisk
-Set colDisks = objWMIService.ExecQuery("Select DeviceID, Size, FreeSpace from Win32_LogicalDisk Where DriveType = 3")
-For Each objDisk in colDisks
-    objFile.WriteLine "Disque: " & objDisk.DeviceID & " | Espace libre: " & Round(objDisk.FreeSpace/1073741824, 2) & " GB / " & Round(objDisk.Size/1073741824, 2) & " GB"
-Next
-
 objFile.Close
-
-' ==========================================
-' 23. COMPRESSION DU RAPPORT EN CAB
-' ==========================================
-Dim cabFile, makecabCmd
-cabFile = Replace(strFileName, ".txt", ".cab")
-
-makecabCmd = "makecab.exe """ & strFileName & """ """ & cabFile & """"
-objShell.Run makecabCmd, 0, True
-
-objFSO.DeleteFile strFileName
-
-MsgBox "Audit terminé !" & vbCrLf & "Fichier TXT: " & strFileName & vbCrLf & "Fichier CAB: " & cabFile, vbInformation, "Succès"
+MsgBox "Audit terminé !" & vbCrLf & "Fichier : " & strFileName, vbInformation, "Succès"
 
 
 ' ==========================================
